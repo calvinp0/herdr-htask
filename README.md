@@ -197,6 +197,17 @@ for the live Codex terminal working in that repo, and leaves the terminal empty 
 When you change a Codex task in the panel, the message typed to Codex asks it to update its plan to
 match, so its next `update_plan` doesn't undo your change.
 
+Not every Codex has `update_plan`: in its code mode (only an `exec` tool that calls others), the plan
+tool isn't offered, so the hook never fires and Codex follows the instructions' fallback, `htask add` /
+`start` / `done`. Its commands also run without `HC_TERMINAL_ID`; htask then finds the Codex terminal
+through herdr-core, as the hook does.
+
+In Codex's `workspace-write` sandbox, htask's writes (to `~/.local/share/herdr-tasks`) need approval.
+To stop the prompts, choose "always allow" for `htask` when Codex asks (it saves
+`prefix_rule(pattern=["htask"], decision="allow")` in `~/.codex/rules/default.rules`), or add the
+folder to `[sandbox_workspace_write] writable_roots` in `~/.codex/config.toml`. htask doesn't change
+Codex's permissions for you.
+
 ## Agent instructions
 
 `htask connect` adds these, between `<!-- htask:start -->` and `<!-- htask:end -->` markers. By hand:

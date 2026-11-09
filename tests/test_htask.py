@@ -542,6 +542,19 @@ else:
         self.hook([{"step": "A", "status": "pending"}])
         self.assertEqual(self.tasks()[0]["pane_id"], "t3")
 
+    def test_codex_commands_without_a_terminal_id_find_theirs(self):
+        # Codex runs shell commands without HC_TERMINAL_ID: add and start still record its terminal.
+        self.fake_hc({"t8": ["codex", str(self.repo_a), "working"]})
+        self.env["HTASK_AGENT"] = "codex"
+        self.run_htask("add", "from codex")
+        self.assertEqual(self.tasks()[0]["pane_id"], "t8")
+        self.env.pop("HTASK_AGENT")
+        self.run_htask("--by", "you", "add", "queued by you")  # not codex: no terminal
+        self.assertIsNone(self.tasks()[1]["pane_id"])
+        self.env["HTASK_AGENT"] = "codex"
+        self.run_htask("start", "2")                            # Codex starts it: claims it
+        self.assertEqual(self.tasks()[1]["pane_id"], "t8")
+
     def test_ambiguous_terminal_is_left_empty(self):
         self.fake_hc({"t3": ["codex", str(self.repo_a), "working"], "t4": ["codex", str(self.repo_a), "working"]})
         self.hook([{"step": "A", "status": "pending"}])
@@ -590,6 +603,33 @@ class ConnectCodex(Base):
         self.assertTrue(text.startswith("# Mine\n\n<!-- htask:start -->\n## Task tracking (htask)"))
         self.assertIn("update_plan", text)
         self.assertNotIn("old text", text)
+
+
+class DetectAgent(Base):
+    def detect(self, via=None):
+        code = ("from importlib.machinery import SourceFileLoader; import warnings; warnings.simplefilter('ignore');"
+                f"print(SourceFileLoader('h', {str(HTASK)!r}).load_module().detect_agent())")
+        cmd = [sys.executable, "-c", code]
+        if via:  # run under a parent process called `via`
+            link = Path(self.tmp.name) / via
+            link.symlink_to("/bin/sh")
+            import shlex
+            # "; true" stops the shell exec-ing python in its place, so the shell stays its parent.
+            cmd = [str(link), "-c", " ".join(shlex.quote(c) for c in cmd) + "; true"]
+        return subprocess.run(cmd, env=self.env, capture_output=True, text=True).stdout.strip()
+
+    def test_codex_home_or_other_codex_vars_are_not_codex(self):
+        self.env.update(CODEX_HOME="/x", CODEX_COMPANION_SESSION_ID="y")
+        self.assertEqual(self.detect(), "None")
+
+    def test_codex_sandbox_var(self):
+        self.env["CODEX_SANDBOX_NETWORK_DISABLED"] = "1"
+        self.assertEqual(self.detect(), "codex")
+
+    @unittest.skipUnless(os.path.exists("/proc/self/stat"), "parent lookup via /proc (Linux)")
+    def test_codex_parent_process(self):
+        self.assertEqual(self.detect(via="codex"), "codex")
+        self.assertEqual(self.detect(), "None")
 
 
 if __name__ == "__main__":

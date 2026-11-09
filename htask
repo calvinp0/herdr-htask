@@ -166,9 +166,35 @@ def detect_agent() -> str | None:
         return os.environ["HTASK_AGENT"]
     if os.environ.get("CLAUDECODE"):
         return "claude"
-    if any(k.startswith("CODEX_") for k in os.environ):
+    # Not any CODEX_* variable: people export CODEX_HOME, and tools set others (CODEX_COMPANION_*).
+    # These are the ones Codex sets for the commands it runs; failing that, look for a codex parent.
+    if any(os.environ.get(k) for k in ("CODEX_THREAD_ID", "CODEX_SANDBOX", "CODEX_SANDBOX_NETWORK_DISABLED")):
+        return "codex"
+    if _has_ancestor("codex"):
         return "codex"
     return None
+
+
+def _has_ancestor(name: str, depth: int = 30) -> bool:
+    """Is one of this process's parents (up to `depth`) a program called `name`? Linux and macOS."""
+    pid = os.getppid()
+    for _ in range(depth):
+        if pid <= 1:
+            return False
+        try:
+            if os.path.exists(f"/proc/{pid}/stat"):
+                stat = Path(f"/proc/{pid}/stat").read_text()
+                comm, ppid = stat[stat.index("(") + 1:stat.rindex(")")], int(stat[stat.rindex(")") + 2:].split()[1])
+            else:
+                out = subprocess.run(["ps", "-o", "ppid=,comm=", "-p", str(pid)], capture_output=True, text=True, timeout=2)
+                ppid_s, _, comm = out.stdout.strip().partition(" ")
+                ppid, comm = int(ppid_s), os.path.basename(comm.strip())
+        except (OSError, ValueError, subprocess.TimeoutExpired):
+            return False
+        if comm == name or comm.startswith(name + "-"):
+            return True
+        pid = ppid
+    return False
 
 
 def log_change(conn: sqlite3.Connection, args, task_id: int, what: str, detail: str | None = None) -> None:
@@ -179,6 +205,15 @@ def log_change(conn: sqlite3.Connection, args, task_id: int, what: str, detail: 
 def origin_id() -> str | None:
     """Where the command ran: a Herdr TUI pane (w1:p2) or a Herdr app terminal (t9)."""
     return os.environ.get("HERDR_PANE_ID") or os.environ.get("HC_TERMINAL_ID")
+
+
+def command_origin(project: str) -> str | None:
+    """The terminal an htask command came from. Codex runs its commands without HC_TERMINAL_ID
+    (like its hooks), so for Codex ask herdr-core which Codex terminal is working in this repo."""
+    origin = origin_id()
+    if origin is None and detect_agent() == "codex":
+        origin = codex_terminal(project)
+    return origin
 
 
 def fetch_tasks(conn: sqlite3.Connection, project: str, archived: bool = False) -> list[sqlite3.Row]:
@@ -211,7 +246,7 @@ def cmd_add(args) -> None:
             "INSERT INTO tasks (project, title, description, status, agent, pane_id,"
             " created_at, updated_at, completed_at) VALUES (?,?,?,?,?,?,?,?,?)",
             (project, args.title, args.description or "", args.status,
-             args.agent or detect_agent(), origin_id(), now, now,
+             args.agent or detect_agent(), command_origin(project), now, now,
              now if args.status == "done" else None),
         )
         log_change(conn, args, cur.lastrowid, "added")
@@ -228,8 +263,9 @@ def set_status(args, status: str) -> None:
                   "completed_at": now if status == "done" else None}
         # Whoever starts a task owns it: an agent started on a to-do from the panel (or picking up
         # another session's task) claims it for its terminal, so the panel shows its live state.
-        if status == "doing" and origin_id():
-            fields["pane_id"] = origin_id()
+        origin = command_origin(project) if status == "doing" else None
+        if origin:
+            fields["pane_id"] = origin
             if detect_agent():
                 fields["agent"] = detect_agent()
         if getattr(args, "message", None):
