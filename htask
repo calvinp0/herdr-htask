@@ -1,0 +1,423 @@
+#!/usr/bin/env python3
+"""htask: a shared task list for coding agents, shown in a Herdr side panel.
+
+Agents (Claude Code, Codex, ...) record work with the CLI:
+
+    htask add "Parse ORCA output" -d "Handle the new 6.x energy block"
+    htask start 3
+    htask note 3 "regex works for 6.0, 6.1 untested"
+    htask done 3
+
+Every task belongs to a project, the git root of the directory the command ran
+in. `htask panel` is the TUI that Herdr opens in a right split: it follows
+the focused pane, shows that pane's project, and redraws when the DB changes.
+
+Stdlib only. Storage: $HTASK_DB, else $XDG_DATA_HOME/herdr-tasks/tasks.db.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sqlite3
+import subprocess
+import sys
+import textwrap
+import time
+from pathlib import Path
+
+STATUSES = ("todo", "doing", "blocked", "done", "dropped")
+PLUGIN_ID = "calvin.htask"
+
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS tasks (
+    id           INTEGER PRIMARY KEY,
+    project      TEXT NOT NULL,
+    title        TEXT NOT NULL,
+    description  TEXT NOT NULL DEFAULT '',
+    status       TEXT NOT NULL DEFAULT 'todo'
+                 CHECK (status IN ('todo','doing','blocked','done','dropped')),
+    note         TEXT NOT NULL DEFAULT '',
+    agent        TEXT,
+    pane_id      TEXT,
+    created_at   REAL NOT NULL,
+    updated_at   REAL NOT NULL,
+    completed_at REAL
+);
+CREATE INDEX IF NOT EXISTS tasks_project ON tasks (project, status);
+"""
+
+
+# --- storage -----------------------------------------------------------------
+
+def db_path() -> Path:
+    if os.environ.get("HTASK_DB"):
+        return Path(os.environ["HTASK_DB"]).expanduser()
+    base = os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
+    return Path(base) / "herdr-tasks" / "tasks.db"
+
+
+def connect() -> sqlite3.Connection:
+    path = db_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(path, timeout=10)
+    conn.row_factory = sqlite3.Row
+    # WAL lets the panel read while several agents write.
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=10000")
+    conn.executescript(SCHEMA)
+    return conn
+
+
+_root_cache: dict[str, str] = {}
+
+
+def project_root(cwd: str) -> str:
+    """Git toplevel of cwd, or cwd itself outside a repo. Cached per cwd."""
+    cwd = os.path.realpath(os.path.expanduser(cwd))
+    if cwd not in _root_cache:
+        try:
+            out = subprocess.run(
+                ["git", "-C", cwd, "rev-parse", "--show-toplevel"],
+                capture_output=True, text=True, timeout=3,
+            )
+            root = out.stdout.strip() if out.returncode == 0 else ""
+        except (OSError, subprocess.TimeoutExpired):
+            root = ""
+        _root_cache[cwd] = os.path.realpath(root) if root else cwd
+    return _root_cache[cwd]
+
+
+def detect_agent() -> str | None:
+    if os.environ.get("HTASK_AGENT"):
+        return os.environ["HTASK_AGENT"]
+    if os.environ.get("CLAUDECODE"):
+        return "claude"
+    if any(k.startswith("CODEX_") for k in os.environ):
+        return "codex"
+    return None
+
+
+def fetch_tasks(conn: sqlite3.Connection, project: str) -> list[sqlite3.Row]:
+    return conn.execute(
+        "SELECT * FROM tasks WHERE project = ? ORDER BY id", (project,)
+    ).fetchall()
+
+
+# --- CLI -----------------------------------------------------------------------
+
+def _project_from_args(args) -> str:
+    return project_root(args.project or os.environ.get("HTASK_PROJECT") or os.getcwd())
+
+
+def _get_task(conn, task_id: int, project: str) -> sqlite3.Row:
+    row = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    if row is None:
+        sys.exit(f"htask: no task #{task_id}")
+    if row["project"] != project:
+        print(f"htask: note: #{task_id} belongs to {row['project']}", file=sys.stderr)
+    return row
+
+
+def cmd_add(args) -> None:
+    conn, now = connect(), time.time()
+    project = _project_from_args(args)
+    with conn:
+        cur = conn.execute(
+            "INSERT INTO tasks (project, title, description, status, agent, pane_id,"
+            " created_at, updated_at, completed_at) VALUES (?,?,?,?,?,?,?,?,?)",
+            (project, args.title, args.description or "", args.status,
+             detect_agent(), os.environ.get("HERDR_PANE_ID"), now, now,
+             now if args.status == "done" else None),
+        )
+    print(f"#{cur.lastrowid} {args.title}")
+
+
+def set_status(args, status: str) -> None:
+    conn, now = connect(), time.time()
+    project = _project_from_args(args)
+    for task_id in args.ids:
+        _get_task(conn, task_id, project)
+        fields = {"status": status, "updated_at": now,
+                  "completed_at": now if status == "done" else None}
+        if getattr(args, "message", None):
+            fields["note"] = args.message
+        sets = ", ".join(f"{k} = ?" for k in fields)
+        with conn:
+            conn.execute(f"UPDATE tasks SET {sets} WHERE id = ?", (*fields.values(), task_id))
+        print(f"#{task_id} -> {status}")
+
+
+def cmd_note(args) -> None:
+    conn = connect()
+    _get_task(conn, args.id, _project_from_args(args))
+    with conn:
+        conn.execute("UPDATE tasks SET note = ?, updated_at = ? WHERE id = ?",
+                     (args.text, time.time(), args.id))
+    print(f"#{args.id} note set")
+
+
+def cmd_edit(args) -> None:
+    conn = connect()
+    _get_task(conn, args.id, _project_from_args(args))
+    fields = {k: v for k, v in (("title", args.title), ("description", args.description)) if v is not None}
+    if not fields:
+        sys.exit("htask: edit needs --title and/or -d")
+    fields["updated_at"] = time.time()
+    with conn:
+        conn.execute(f"UPDATE tasks SET {', '.join(f'{k} = ?' for k in fields)} WHERE id = ?",
+                     (*fields.values(), args.id))
+    print(f"#{args.id} updated")
+
+
+def cmd_list(args) -> None:
+    conn = connect()
+    project = _project_from_args(args)
+    rows = [r for r in fetch_tasks(conn, project)
+            if args.all or r["status"] not in ("done", "dropped")]
+    if args.json:
+        print(json.dumps([dict(r) for r in rows], indent=2))
+        return
+    if not rows:
+        print(f"no open tasks in {project}" + ("" if args.all else " (use --all for done)"))
+        return
+    for r in rows:
+        print(f"#{r['id']:<4} [{r['status']:<7}] {r['title']}")
+        if r["description"]:
+            print(textwrap.indent(r["description"], " " * 16))
+        if r["note"]:
+            print(textwrap.indent("note: " + r["note"], " " * 16))
+
+
+def cmd_plugin_open(args) -> None:
+    """Plugin action: open the panel in a right split beside the focused pane."""
+    herdr = os.environ.get("HERDR_BIN_PATH", "herdr")
+    ctx = json.loads(os.environ.get("HERDR_PLUGIN_CONTEXT_JSON") or "{}")
+    cmd = [herdr, "plugin", "pane", "open", "--plugin", PLUGIN_ID,
+           "--entrypoint", "panel", "--placement", "split", "--direction", "right"]
+    if ctx.get("focused_pane_id"):
+        cmd += ["--target-pane", ctx["focused_pane_id"]]
+    out = subprocess.run(cmd, capture_output=True, text=True)
+    if out.returncode != 0:
+        sys.exit(out.stderr or out.stdout)
+    try:
+        pane_id = json.loads(out.stdout)["result"]["plugin_pane"]["pane"]["pane_id"]
+        subprocess.run([herdr, "pane", "rename", pane_id, "tasks"], capture_output=True)
+    except (KeyError, ValueError, TypeError):
+        pass
+
+
+# --- panel ---------------------------------------------------------------------
+
+def focused_context(prev: dict | None) -> dict:
+    """Which pane the panel should follow: {pane_id, cwd, agent}.
+
+    Polls `herdr pane current` (the focused pane). When the user focuses the
+    panel itself, keep showing the pane they came from.
+    """
+    own = os.environ.get("HERDR_PANE_ID")
+    if os.environ.get("HERDR_ENV") != "1":
+        return prev or {"pane_id": None, "cwd": os.getcwd(), "agent": None}
+    if prev is None:
+        ctx = json.loads(os.environ.get("HERDR_PLUGIN_CONTEXT_JSON") or "{}")
+        prev = {"pane_id": ctx.get("focused_pane_id"),
+                "cwd": ctx.get("focused_pane_cwd") or ctx.get("workspace_cwd") or os.getcwd(),
+                "agent": ctx.get("focused_pane_agent")}
+    herdr = os.environ.get("HERDR_BIN_PATH", "herdr")
+    # `pane current` answers for the caller's HERDR_PANE_ID when it is set,
+    # which would be this panel. Without it, Herdr reports the focused pane.
+    env = {k: v for k, v in os.environ.items() if k != "HERDR_PANE_ID"}
+    try:
+        out = subprocess.run([herdr, "pane", "current"], capture_output=True,
+                             text=True, timeout=2, env=env)
+        pane = json.loads(out.stdout)["result"]["pane"]
+    except (OSError, ValueError, KeyError, subprocess.TimeoutExpired):
+        return prev
+    if pane.get("pane_id") == own:
+        return prev
+    return {"pane_id": pane.get("pane_id"),
+            "cwd": pane.get("foreground_cwd") or pane.get("cwd") or prev["cwd"],
+            "agent": pane.get("agent")}
+
+
+def order_tasks(tasks: list[sqlite3.Row], focused_pane_id: str | None,
+                show_done: bool) -> list[tuple[str, list[sqlite3.Row]]]:
+    """Group and order tasks into the panel's sections.
+
+    Returns [(section_title, rows), ...] in display order; empty sections are
+    skipped by the renderer.
+
+    TODO(calvin): this is the policy for what you see first. Things to decide:
+      - section order: should "blocked" sit above "doing" so it grabs attention?
+      - should tasks created by the focused pane (row["pane_id"] == focused_pane_id)
+        float to the top of each section, or is project-wide order better?
+      - how many done tasks to keep: all, the last N, only completed today?
+        (row["completed_at"] is a unix timestamp)
+      - do "dropped" tasks appear at all?
+    """
+    by = lambda s: [t for t in tasks if t["status"] == s]
+    sections = [("DOING", by("doing")), ("BLOCKED", by("blocked")), ("TODO", by("todo"))]
+    if show_done:
+        sections.append(("DONE", by("done")))
+    return sections
+
+
+def run_panel(args) -> None:
+    import curses
+    curses.wrapper(lambda scr: _panel(scr, args))
+
+
+STATUS_GLYPH = {"todo": "○", "doing": "◐", "blocked": "✗", "done": "●", "dropped": "–"}
+
+
+def _panel(scr, args) -> None:
+    import curses
+    curses.curs_set(0)
+    curses.use_default_colors()
+    palette = {"doing": curses.COLOR_YELLOW, "blocked": curses.COLOR_RED,
+               "todo": curses.COLOR_CYAN, "done": curses.COLOR_GREEN,
+               "dropped": curses.COLOR_WHITE, "head": curses.COLOR_MAGENTA}
+    color = {}
+    for i, (name, fg) in enumerate(palette.items(), start=1):
+        curses.init_pair(i, fg, -1)
+        color[name] = curses.color_pair(i)
+    scr.timeout(400)
+
+    conn = connect()
+    ctx, last_poll, last_version = None, 0.0, None
+    show_done, show_desc, scroll = True, True, 0
+    lines: list[tuple[str, int]] = []
+    dirty = True
+
+    while True:
+        now = time.monotonic()
+        if args.project is None and now - last_poll > 1.0:
+            new_ctx = focused_context(ctx)
+            dirty |= new_ctx != ctx
+            ctx, last_poll = new_ctx, now
+        elif ctx is None:
+            ctx = {"pane_id": None, "cwd": args.project, "agent": None}
+        version = conn.execute("PRAGMA data_version").fetchone()[0]
+        dirty |= version != last_version
+        last_version = version
+
+        h, w = scr.getmaxyx()
+        if dirty:
+            project = project_root(ctx["cwd"])
+            tasks = fetch_tasks(conn, project)
+            lines = _render(tasks, project, ctx, w, show_done, show_desc, color)
+            dirty = False
+        scroll = max(0, min(scroll, len(lines) - h))
+        scr.erase()
+        for y, (text, attr) in enumerate(lines[scroll:scroll + h]):
+            try:
+                scr.addnstr(y, 0, text, w - 1, attr)
+            except curses.error:
+                pass
+        scr.refresh()
+
+        key = scr.getch()
+        if key in (ord("q"), 27):
+            return
+        if key in (ord("j"), curses.KEY_DOWN):
+            scroll += 1
+        elif key in (ord("k"), curses.KEY_UP):
+            scroll = max(0, scroll - 1)
+        elif key == ord("d"):
+            show_done, dirty = not show_done, True
+        elif key == ord("v"):
+            show_desc, dirty = not show_desc, True
+        elif key == curses.KEY_RESIZE:
+            dirty = True
+
+
+def _render(tasks, project, ctx, width, show_done, show_desc, color) -> list[tuple[str, int]]:
+    import curses
+    width = max(width - 1, 20)
+    open_ = [t for t in tasks if t["status"] not in ("done", "dropped")]
+    done = [t for t in tasks if t["status"] == "done"]
+    total = len(open_) + len(done)
+    bar_w = max(width - 12, 5)
+    filled = round(bar_w * len(done) / total) if total else 0
+
+    out: list[tuple[str, int]] = [
+        (os.path.basename(project) or project, color["head"] | curses.A_BOLD),
+        (f"{ctx.get('agent') or 'no agent'}  {ctx.get('pane_id') or ''}", curses.A_DIM),
+        ("█" * filled + "░" * (bar_w - filled) + f" {len(done)}/{total}", color["done"]),
+        ("", 0),
+    ]
+    sections = order_tasks(tasks, ctx.get("pane_id"), show_done)
+    if not any(rows for _, rows in sections):
+        out.append(("No tasks yet.", curses.A_DIM))
+        out.append(('Agents add them with: htask add "title" -d "..."', curses.A_DIM))
+    for title, rows in sections:
+        if not rows:
+            continue
+        out.append((f"{title} ({len(rows)})", curses.A_BOLD | curses.A_UNDERLINE))
+        for t in rows:
+            mine = "›" if ctx.get("pane_id") and t["pane_id"] == ctx["pane_id"] else " "
+            head = f"{mine}{STATUS_GLYPH[t['status']]} #{t['id']} "
+            attr = color[t["status"]] | (curses.A_DIM if t["status"] == "done" else 0)
+            wrapped = textwrap.wrap(t["title"], width - len(head)) or [""]
+            out.append((head + wrapped[0], attr))
+            out.extend((" " * len(head) + extra, attr) for extra in wrapped[1:])
+            if show_desc and t["status"] != "done":
+                for field, prefix in (("description", ""), ("note", "↳ ")):
+                    if t[field]:
+                        for line in textwrap.wrap(prefix + t[field], width - len(head)):
+                            out.append((" " * len(head) + line, curses.A_DIM))
+        out.append(("", 0))
+    out.append(("q quit  j/k scroll  d done  v details", curses.A_DIM))
+    return out
+
+
+# --- entry ---------------------------------------------------------------------
+
+def main(argv=None) -> None:
+    p = argparse.ArgumentParser(prog="htask", description=__doc__.split("\n\n")[0])
+    p.add_argument("--project", help="project dir (default: git root of cwd)")
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    a = sub.add_parser("add", help="create a task, prints its id")
+    a.add_argument("title")
+    a.add_argument("-d", "--description")
+    a.add_argument("--status", choices=STATUSES, default="todo")
+    a.set_defaults(fn=cmd_add)
+
+    for name, status, helptext in (
+        ("start", "doing", "mark tasks in progress"),
+        ("done", "done", "mark tasks complete"),
+        ("block", "blocked", "mark tasks blocked (-m reason)"),
+        ("drop", "dropped", "abandon tasks"),
+        ("reopen", "todo", "move tasks back to todo"),
+    ):
+        s = sub.add_parser(name, help=helptext)
+        s.add_argument("ids", type=int, nargs="+")
+        s.add_argument("-m", "--message", help="also set the task's note")
+        s.set_defaults(fn=lambda args, st=status: set_status(args, st))
+
+    n = sub.add_parser("note", help="set a progress note on a task")
+    n.add_argument("id", type=int)
+    n.add_argument("text")
+    n.set_defaults(fn=cmd_note)
+
+    e = sub.add_parser("edit", help="change title or description")
+    e.add_argument("id", type=int)
+    e.add_argument("--title")
+    e.add_argument("-d", "--description")
+    e.set_defaults(fn=cmd_edit)
+
+    ls = sub.add_parser("list", help="list this project's open tasks")
+    ls.add_argument("--all", action="store_true", help="include done/dropped")
+    ls.add_argument("--json", action="store_true")
+    ls.set_defaults(fn=cmd_list)
+
+    sub.add_parser("panel", help="run the TUI panel").set_defaults(fn=run_panel)
+    sub.add_parser("plugin-open", help=argparse.SUPPRESS).set_defaults(fn=cmd_plugin_open)
+
+    args = p.parse_args(argv)
+    args.fn(args)
+
+
+if __name__ == "__main__":
+    main()

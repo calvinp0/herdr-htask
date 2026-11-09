@@ -1,0 +1,18 @@
+id = "calvin.htask"
+name = "htask"
+version = "0.1.0"
+min_herdr_version = "0.9.0"
+description = "Right-hand panel showing what agents have done and what's left, from a shared SQLite task list."
+platforms = ["linux", "macos"]
+
+[[actions]]
+id = "open"
+title = "htask: open task panel"
+description = "Open the task panel in a right split. It follows whichever pane you focus."
+command = ["python3", "htask", "plugin-open"]
+
+[[panes]]
+id = "panel"
+title = "Tasks"
+placement = "split"
+command = ["python3", "htask", "panel"]
