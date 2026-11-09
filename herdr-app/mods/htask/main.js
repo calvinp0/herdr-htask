@@ -76,6 +76,8 @@ class Panel {
   init(_props, cx) {
     this.tasks = []; this.project = null; this.cwd = null; this.terminal = null;
     this.open = new Set(); this.showDone = true; this.width = 0;
+    // The Archived toggle: off by default, and only then are archived tasks fetched.
+    this.showArchived = false; this.archived = [];
     this.input = InputState.new({ placeholder: "Add a task, then Enter" });
     this.input.on("submit", (_e, cx) => this.add(cx));
     this.input.on("focus", (_e, cx) => { this.typing = true; cx.notify(); });
@@ -98,7 +100,14 @@ class Panel {
         if (cwd !== this.cwd || machine !== this.machine) return;
         if (r.code !== 0) throw new Error(htaskError(machine, r));
         const data = JSON.parse(r.stdout);
-        this.project = data.project; this.tasks = data.tasks; this.error = null;
+        let archived = [];
+        if (this.showArchived) {
+          const a = await htask(machine, ["--project", cwd, "list", "--archived", "--json"]);
+          if (a.code !== 0) throw new Error(htaskError(machine, a));
+          archived = JSON.parse(a.stdout).tasks.sort((x, y) => (y.archived_at ?? 0) - (x.archived_at ?? 0));
+        }
+        if (cwd !== this.cwd || machine !== this.machine) return;
+        this.project = data.project; this.tasks = data.tasks; this.archived = archived; this.error = null;
       } catch (e) {
         if (cwd === this.cwd && machine === this.machine) { this.error = String(e?.message ?? e); this.tasks = []; this.project = null; }
       } finally {
@@ -238,6 +247,7 @@ class Panel {
     const barWidth = Math.max(0, this.width - 28);
     const name = this.project ? this.project.split("/").pop() : "";
     const shown = sections(this.tasks, this.terminal, this.showDone, this.machine).filter(([, rows]) => rows.length);
+    if (this.showArchived && this.archived.length) shown.push(["Archived", this.archived, 0]);
 
     const empty = this.error ? this.error
       : !this.cwd ? "Focus a terminal to see its repo's tasks."
@@ -258,7 +268,11 @@ class Panel {
         .child(div().id("htask-done").px(6).py(2).rounded(5).text_size(11).cursor_pointer()
           .text_color(this.showDone ? t.foreground : t.dim).bg(this.showDone ? t.raised : t.background).hover((s) => s.bg(t.hover))
           .on_click((_e, cx) => { this.showDone = !this.showDone; cx.notify(); })
-          .tooltip(this.showDone ? "Hide done tasks" : "Show done tasks").child("Done")))
+          .tooltip(this.showDone ? "Hide done tasks" : "Show done tasks").child("Done"))
+        .child(div().id("htask-archived").px(6).py(2).rounded(5).text_size(11).cursor_pointer()
+          .text_color(this.showArchived ? t.foreground : t.dim).bg(this.showArchived ? t.raised : t.background).hover((s) => s.bg(t.hover))
+          .on_click((_e, cx) => { this.showArchived = !this.showArchived; this.archived = []; this.refresh(cx); cx.notify(); })
+          .tooltip(this.showArchived ? "Hide archived tasks" : "Show archived tasks (reopen one to bring it back)").child("Archived")))
       .child(div().mx(14).h(3).flex_none().rounded(2).bg(t.border)
         .child(div().h_full().rounded(2).bg(t.done).w(counted.length ? barWidth * done / counted.length : 0)))
       .child(div().flex_1().min_h(0).relative().mt(8)
@@ -267,6 +281,8 @@ class Panel {
             .child(div().px(8).pt(8).pb(3).text_size(10.5).font_semibold().text_color(t.dim).child(`${title.toUpperCase()}  ${rows.length + more}`))
             .children(rows.map((task) => this.row(task, t)))
             .when(more > 0, (e) => e.child(div().px(8).pl(30).py(3).text_size(11).text_color(t.dim).child(`+${more} more (Archive to clear)`)))))
+          .when(this.showArchived && !this.archived.length && Boolean(this.project) && !this.loading, (e) => e.child(
+            div().px(8).pt(8).text_size(11).text_color(t.dim).child(`Nothing archived in ${name}.`)))
           .when(!shown.length, (e) => e.child(v_flex().p(8).gap(6).text_color(t.dim)
             .child(empty)
             .when(!this.error && Boolean(this.project), (e) => e.child(

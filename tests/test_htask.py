@@ -301,5 +301,20 @@ class Doctor(Base):
         self.assertIn("all good", out.stdout)
 
 
+class TuiArchived(unittest.TestCase):
+    def test_archived_section_only_when_toggled(self):
+        from importlib.machinery import SourceFileLoader
+        htask = SourceFileLoader("htask_module", str(HTASK)).load_module()
+        color = dict.fromkeys(["doing", "blocked", "todo", "done", "dropped", "head"], 0)
+        ctx = {"pane_id": None, "agent": None}
+        old = {"id": 7, "status": "done", "title": "old work", "pane_id": None}
+        text = lambda lines: "\n".join(line for line, _ in lines)
+        self.assertNotIn("ARCHIVED", text(htask._render([], "/r", ctx, 80, True, True, color)))
+        shown = text(htask._render([], "/r", ctx, 80, True, True, color, [old]))
+        self.assertIn("ARCHIVED (1)", shown)
+        self.assertIn("#7 old work", shown)
+        self.assertIn("Nothing archived", text(htask._render([], "/r", ctx, 80, True, True, color, [])))
+
+
 if __name__ == "__main__":
     unittest.main()

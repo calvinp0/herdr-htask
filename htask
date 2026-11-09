@@ -622,7 +622,7 @@ def _panel(scr, args) -> None:
 
     conn = connect()
     ctx, last_poll, last_version = None, 0.0, None
-    show_done, show_desc, scroll = True, True, 0
+    show_done, show_desc, show_archived, scroll = True, True, False, 0
     lines: list[tuple[str, int]] = []
     dirty = True
 
@@ -642,7 +642,9 @@ def _panel(scr, args) -> None:
         if dirty:
             project = project_root(ctx["cwd"])
             tasks = fetch_tasks(conn, project)
-            lines = _render(tasks, project, ctx, w, show_done, show_desc, color)
+            archived = sorted(fetch_tasks(conn, project, archived=True),
+                              key=lambda t: t["archived_at"] or 0, reverse=True) if show_archived else None
+            lines = _render(tasks, project, ctx, w, show_done, show_desc, color, archived)
             dirty = False
         scroll = max(0, min(scroll, len(lines) - h))
         scr.erase()
@@ -662,13 +664,15 @@ def _panel(scr, args) -> None:
             scroll = max(0, scroll - 1)
         elif key == ord("d"):
             show_done, dirty = not show_done, True
+        elif key == ord("a"):
+            show_archived, dirty = not show_archived, True
         elif key == ord("v"):
             show_desc, dirty = not show_desc, True
         elif key == curses.KEY_RESIZE:
             dirty = True
 
 
-def _render(tasks, project, ctx, width, show_done, show_desc, color) -> list[tuple[str, int]]:
+def _render(tasks, project, ctx, width, show_done, show_desc, color, archived=None) -> list[tuple[str, int]]:
     import curses
     width = max(width - 1, 20)
     open_ = [t for t in tasks if t["status"] not in ("done", "dropped")]
@@ -706,7 +710,15 @@ def _render(tasks, project, ctx, width, show_done, show_desc, color) -> list[tup
         if more:
             out.append((f"      +{more} more (htask clean to clear)", curses.A_DIM))
         out.append(("", 0))
-    out.append(("q quit  j/k scroll  d done  v details", curses.A_DIM))
+    if archived is not None:
+        # Archived tasks (`a`): newest first, dimmed. `htask reopen <id>` brings one back.
+        out.append((f"ARCHIVED ({len(archived)})", curses.A_BOLD | curses.A_UNDERLINE))
+        if not archived:
+            out.append(("  Nothing archived in this repo.", curses.A_DIM))
+        for t in archived:
+            out.append((f" {STATUS_GLYPH[t['status']]} #{t['id']} {t['title']}", curses.A_DIM))
+        out.append(("", 0))
+    out.append(("q quit  j/k scroll  d done  a archived  v details", curses.A_DIM))
     return out
 
 

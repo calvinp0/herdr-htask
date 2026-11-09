@@ -90,7 +90,8 @@ In the panel:
 - type in the box at the bottom and press Enter to add a task for the next agent;
 - in-progress and blocked tasks show their agent's live state (`t6 working`). Click it to jump to
   that terminal. If the agent has exited or its terminal has closed, the task says so;
-- **Done** shows the five most recent tasks; **Archive** puts away this repo's done tasks.
+- **Done** shows the five most recent tasks; **Archive** puts away this repo's done tasks, and
+  the **Archived** toggle shows them again (newest first). Reopen one to bring it back.
 
 Spaces on SSH machines run htask on that machine, against that machine's own database. Install
 it there once (`scp htask <machine>:~/.local/bin/htask`). Remote spaces refresh every 5 seconds.
@@ -107,7 +108,8 @@ command = "calvin.htask.open"
 description = "open task panel"
 ```
 
-Panel keys: `j`/`k` scroll, `d` show or hide done tasks, `v` show or hide descriptions, `q` close.
+Panel keys: `j`/`k` scroll, `d` show or hide done tasks, `a` show or hide archived tasks,
+`v` show or hide descriptions, `q` close.
 
 For progress in the sidebar, add the `$tasks` token (done/total for the agent's repo, updated
 whenever an agent in that pane changes a task):
