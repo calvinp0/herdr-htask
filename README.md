@@ -27,6 +27,33 @@ DONE (1)
 
 ```sh
 ln -s "$PWD/htask" ~/.local/bin/htask     # agents need it on PATH
+```
+
+### Herdr desktop app (`herdr-app`)
+
+The app uses JavaScript mods, not the terminal UI's plugins. `herdr-app/mods/htask/` is a native
+panel that shows the focused terminal's repo and redraws when `htask` writes.
+
+```sh
+cp -r herdr-app/mods/htask ~/.config/herdr-app/mods/
+herdr-app check ~/.config/herdr-app/mods/htask
+```
+
+Then put it in your layout's right-hand panel stack and give it a button:
+
+- in `~/.config/herdr-app/layouts/<layout>.json`, add
+  `{ "id": "htask", "type": "block", "content": { "mod": "htask" } }` to the `panel-body` stack;
+- in the tab bar mod (`tabs-plus/main.js`), add `["htask", "Tasks", "mods/htask/htask.svg"]` to
+  `PANELS` and `"htask"` to the `enabled` list.
+
+Clicking **Tasks** in the tab bar opens and closes the panel. Click a task for its description,
+agent and last update. `htask` rewrites `~/.local/share/herdr-tasks/signal/changed` after every
+change, and the panel watches that folder. It can't watch the DB folder itself, because SQLite
+creates and deletes its `-wal`/`-shm` files on every read.
+
+### Herdr terminal UI (`herdr`)
+
+```sh
 herdr plugin link "$PWD"
 ```
 

@@ -28,7 +28,9 @@ class HtaskCLI(unittest.TestCase):
                               env=self.env, capture_output=True, text=True, check=check)
 
     def tasks(self, cwd=None):
-        return json.loads(self.run_htask("list", "--all", "--json", cwd=cwd).stdout)
+        out = json.loads(self.run_htask("list", "--all", "--json", cwd=cwd).stdout)
+        self.assertEqual(out["project"], os.path.realpath(cwd or self.repo_a))
+        return out["tasks"]
 
     def test_lifecycle(self):
         self.run_htask("add", "one", "-d", "first, with a comma")

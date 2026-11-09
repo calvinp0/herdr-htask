@@ -24,6 +24,7 @@ import subprocess
 import sys
 import textwrap
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 STATUSES = ("todo", "doing", "blocked", "done", "dropped")
@@ -69,6 +70,26 @@ def connect() -> sqlite3.Connection:
     return conn
 
 
+def signal_path() -> Path:
+    """A file rewritten after every change. The app panel watches its folder.
+
+    The DB folder itself can't be watched: SQLite creates and deletes its -wal
+    and -shm files on every connection, readers included, so a watcher that
+    reloads on change would trigger itself forever.
+    """
+    return db_path().parent / "signal" / "changed"
+
+
+@contextmanager
+def writing(conn: sqlite3.Connection):
+    """Commit (or roll back) the block, then announce the change."""
+    with conn:
+        yield
+    signal = signal_path()
+    signal.parent.mkdir(parents=True, exist_ok=True)
+    signal.write_text(f"{time.time()}\n")
+
+
 _root_cache: dict[str, str] = {}
 
 
@@ -98,6 +119,11 @@ def detect_agent() -> str | None:
     return None
 
 
+def origin_id() -> str | None:
+    """Where the command ran: a Herdr TUI pane (w1:p2) or a Herdr app terminal (t9)."""
+    return os.environ.get("HERDR_PANE_ID") or os.environ.get("HC_TERMINAL_ID")
+
+
 def fetch_tasks(conn: sqlite3.Connection, project: str) -> list[sqlite3.Row]:
     return conn.execute(
         "SELECT * FROM tasks WHERE project = ? ORDER BY id", (project,)
@@ -122,12 +148,12 @@ def _get_task(conn, task_id: int, project: str) -> sqlite3.Row:
 def cmd_add(args) -> None:
     conn, now = connect(), time.time()
     project = _project_from_args(args)
-    with conn:
+    with writing(conn):
         cur = conn.execute(
             "INSERT INTO tasks (project, title, description, status, agent, pane_id,"
             " created_at, updated_at, completed_at) VALUES (?,?,?,?,?,?,?,?,?)",
             (project, args.title, args.description or "", args.status,
-             detect_agent(), os.environ.get("HERDR_PANE_ID"), now, now,
+             detect_agent(), origin_id(), now, now,
              now if args.status == "done" else None),
         )
     print(f"#{cur.lastrowid} {args.title}")
@@ -143,7 +169,7 @@ def set_status(args, status: str) -> None:
         if getattr(args, "message", None):
             fields["note"] = args.message
         sets = ", ".join(f"{k} = ?" for k in fields)
-        with conn:
+        with writing(conn):
             conn.execute(f"UPDATE tasks SET {sets} WHERE id = ?", (*fields.values(), task_id))
         print(f"#{task_id} -> {status}")
 
@@ -151,7 +177,7 @@ def set_status(args, status: str) -> None:
 def cmd_note(args) -> None:
     conn = connect()
     _get_task(conn, args.id, _project_from_args(args))
-    with conn:
+    with writing(conn):
         conn.execute("UPDATE tasks SET note = ?, updated_at = ? WHERE id = ?",
                      (args.text, time.time(), args.id))
     print(f"#{args.id} note set")
@@ -164,7 +190,7 @@ def cmd_edit(args) -> None:
     if not fields:
         sys.exit("htask: edit needs --title and/or -d")
     fields["updated_at"] = time.time()
-    with conn:
+    with writing(conn):
         conn.execute(f"UPDATE tasks SET {', '.join(f'{k} = ?' for k in fields)} WHERE id = ?",
                      (*fields.values(), args.id))
     print(f"#{args.id} updated")
@@ -176,7 +202,7 @@ def cmd_list(args) -> None:
     rows = [r for r in fetch_tasks(conn, project)
             if args.all or r["status"] not in ("done", "dropped")]
     if args.json:
-        print(json.dumps([dict(r) for r in rows], indent=2))
+        print(json.dumps({"project": project, "tasks": [dict(r) for r in rows]}, indent=2))
         return
     if not rows:
         print(f"no open tasks in {project}" + ("" if args.all else " (use --all for done)"))
