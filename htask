@@ -28,6 +28,7 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 
+__version__ = "0.1.0"
 STATUSES = ("todo", "doing", "blocked", "done", "dropped")
 PLUGIN_ID = "calvin.htask"
 
@@ -638,10 +639,25 @@ def codex_hooks_enabled() -> bool:
     """Codex runs hooks only with [features] hooks = true in its config.toml."""
     config = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex") / "config.toml"
     try:
-        import tomllib
-        return bool(tomllib.loads(config.read_text()).get("features", {}).get("hooks"))
-    except (ImportError, OSError, ValueError):
+        text = config.read_text()
+    except OSError:
         return False
+    try:
+        import tomllib  # Python 3.11+
+        return bool(tomllib.loads(text).get("features", {}).get("hooks"))
+    except ImportError:
+        pass
+    except ValueError:
+        return False
+    # Python 3.10: find `hooks = true` in the [features] table.
+    table = None
+    for line in text.splitlines():
+        line = line.split("#", 1)[0].strip()
+        if line.startswith("["):
+            table = line.strip("[] ")
+        elif table == "features" and line.replace(" ", "") == "hooks=true":
+            return True
+    return False
 
 
 def _apply_hooks(path: Path, specs, remove: bool) -> str | None:
@@ -1296,6 +1312,7 @@ def _render(tasks, project, ctx, width, show_done, show_desc, color, archived=No
 
 def main(argv=None) -> None:
     p = argparse.ArgumentParser(prog="htask", description=__doc__.split("\n\n")[0])
+    p.add_argument("--version", action="version", version=f"htask {__version__}")
     p.add_argument("--project", help="project dir (default: git root of cwd)")
     p.add_argument("--by", help="who is making the change (the app panel passes 'you')")
     sub = p.add_subparsers(dest="cmd", required=True)

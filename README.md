@@ -1,5 +1,7 @@
 # htask: a task panel for coding agents in Herdr
 
+[![tests](https://github.com/calvinp0/herdr-htask/actions/workflows/tests.yml/badge.svg)](https://github.com/calvinp0/herdr-htask/actions/workflows/tests.yml)
+
 A side panel for [Herdr](https://herdr.dev) that shows what your coding agents have finished,
 what they're working on, what's blocked, and what's left. Agents record tasks with a small
 `htask` CLI in one shared SQLite database. The panel follows the terminal you focus, shows that
@@ -340,6 +342,9 @@ Query it directly, for example:
 ```sh
 python3 -m unittest discover tests
 ```
+
+CI runs them on Linux and macOS with Python 3.10 and 3.12, and parses every mod file with
+`node --check` (the app's own `herdr-app check` needs Herdr, so run it locally).
 
 ## License
 
