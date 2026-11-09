@@ -64,6 +64,11 @@ the agent that owns the task.
   `tab.new {name: title, folder: repo, argv: agent.run, task: message}`. Send: `hc send`. The
   message names the task and asks the agent to run `htask start <id>` (which claims the task for
   the agent's terminal), `htask done`, or `htask block`. Nothing is sent to an agent not chosen.
+- **Timeline** in the header swaps the task list for the activity feed (`htask timeline --json`,
+  80 newest, `--everywhere` in All): day headings (TODAY, YESTERDAY, then dates), each entry "HH:MM
+  who (terminal) verb #id title" (you in `accent`, finished in `done`, blocked in `blocked`), its
+  detail under it; the status chips step aside. Clicking an entry returns to the list with that
+  task open.
 - **Agents** in the header opens a "CONNECT AGENTS" box under the chips: one row per agent (Claude
   Code, Codex, Pi; Claude and Codex get hooks, Pi only instructions) with its state (`connected` in `done`, `partly connected` in `blocked`, `not
   connected` / `not installed` in `dim`) and a Connect / Finish / Disconnect button that runs

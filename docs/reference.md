@@ -10,6 +10,7 @@ htask note <id> "text"
 htask edit <id> [--title ...] [-d ...] [--from 31]    # --from 0 clears it
 htask depend <id> --on 3 [--clear]        # this task comes after #3
 htask next                                # the first to-do that isn't waiting on another
+htask timeline [--limit 40] [--everywhere] [--json]   # who did what to which task, newest first
 htask list [--all] [--archived] [--everywhere] [--json]   # --everywhere: every repo
 htask archive <id>...                     # archive done/dropped tasks now
 htask clean [--days 7] [--everywhere] [--dry-run]   # archive old done/dropped tasks
@@ -63,7 +64,7 @@ Bind these in `~/.config/herdr-app/keys.json`, for example `"global": { "ctrl-al
 
 - `htask.toggle-todo`, `htask.toggle-done`, `htask.toggle-dropped`, `htask.toggle-archived`
 - `htask.toggle-all` (this repo / every repo)
-- `htask.dock` (Add to my layout), `htask.agents` (the Agents box)
+- `htask.dock` (Add to my layout), `htask.agents` (the Agents box), `htask.timeline`
 - `htask.check-update`, `htask.update` (where the focused space runs)
 
 ## Remote spaces
@@ -104,7 +105,8 @@ the panel reads. After each write htask rewrites `signal/changed` beside it, whi
   (`t6` in the app, `w1:p2` in the terminal UI); `external_id` ties it to a Claude or Codex task.
 - `from_id` on a task: the task it came out of (`--from`). Not an order; that's `deps`.
 - `deps`: `task_id` comes after `depends_on`. A done or dropped dependency no longer holds it back.
-- `changes`: who changed what (`by = 'you'` for the human), for the Claude inbox hook.
+- `changes`: who changed what, when, from which terminal (`by = 'you'` for the human). It feeds
+  the timeline and the Claude inbox hook; changes copied in by the Claude and Codex hooks are logged too.
 - `hook_cursor`: how far each Claude session has read `changes`.
 
 Example: `sqlite3 ~/.local/share/herdr-tasks/tasks.db 'select status, count(*) from tasks group by 1'`

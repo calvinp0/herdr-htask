@@ -130,6 +130,8 @@ class Panel {
     this.versions = {};
     // Updates run from the panel: { machine, busy, check } (check: the last `htask update --check`).
     this.updateState = {};
+    // The timeline: the repo's (or every repo's) task activity instead of the task list.
+    this.timelineOpen = false; this.events = [];
     // The Run menu: which to-do it's open for, and the agents installed where this space runs.
     this.menu = null; this.known = null;
     // The Agents section: htask connect status for this space's machine, loaded when opened.
@@ -142,6 +144,7 @@ class Panel {
         if (name) this.flip(name, cx);
         if (c === "dock") this.dock(cx);
         if (c === "agents") this.toggleSetup(cx);
+        if (c === "timeline") this.toggleTimeline(cx);
         if (c === "check-update" || c === "update") this.runUpdate(c === "check-update", cx);
       }
     });
@@ -174,8 +177,14 @@ class Panel {
           if (a.code !== 0) throw new Error(htaskError(machine, a));
           archived = JSON.parse(a.stdout).tasks.sort((x, y) => (y.archived_at ?? 0) - (x.archived_at ?? 0));
         }
+        let events = this.events;
+        if (this.timelineOpen) {
+          const tl = await htask(machine, ["--project", cwd, "timeline", "--json", "--limit", "80", ...scope]);
+          if (tl.code !== 0) throw new Error(htaskError(machine, tl));
+          events = JSON.parse(tl.stdout).events;
+        }
         if (cwd !== this.cwd || machine !== this.machine) return;
-        this.project = data.project; this.tasks = data.tasks; this.archived = archived; this.error = null;
+        this.project = data.project; this.tasks = data.tasks; this.archived = archived; this.events = events; this.error = null;
         const key = machine ?? "";
         if (!(key in this.versions)) {
           this.versions[key] = null;  // asking
@@ -256,6 +265,51 @@ class Panel {
     try { localStorage.setItem("show", JSON.stringify(this.show)); } catch { /* not remembered */ }
     if (name === "archived" || name === "all") { this.archived = []; this.refresh(cx); }
     cx.notify();
+  }
+
+  toggleTimeline(cx) {
+    this.timelineOpen = !this.timelineOpen;
+    if (this.timelineOpen) { this.events = []; this.refresh(cx); }
+    cx.notify();
+  }
+
+  // The timeline, grouped by day: "16:07  claude (t17) finished #42 Title", the detail under it.
+  // Clicking an entry goes back to the task list with that task open.
+  timelineRows(t) {
+    if (!this.events.length)
+      return [div().px(8).pt(8).text_size(11.5).text_color(t.dim).child(this.loading ? "Loading…" : "No activity yet.")];
+    const dayOf = (at) => {
+      const d = new Date(at * 1000), now = new Date(), y = new Date(now); y.setDate(now.getDate() - 1);
+      const same = (a, b) => a.toDateString() === b.toDateString();
+      return same(d, now) ? "Today" : same(d, y) ? "Yesterday"
+        : d.toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" });
+    };
+    const out = [];
+    let day = null;
+    for (const e of this.events) {
+      const heading = dayOf(e.at);
+      if (heading !== day) {
+        day = heading;
+        out.push(div().px(8).pt(8).pb(3).text_size(10.5).font_semibold().text_color(t.dim).child(heading.toUpperCase()));
+      }
+      const time = new Date(e.at * 1000).toTimeString().slice(0, 5);
+      const who = (e.by ?? "someone") + (e.pane_id ? ` (${e.pane_id})` : "");
+      const color = e.what === "status:blocked" ? t.blocked : e.what === "status:done" ? t.done : t.muted;
+      out.push(v_flex().id(`event-${e.id}`).flex_none().px(8).py(4).rounded(7).cursor_pointer().hover((s) => s.bg(t.hover))
+        .on_click((_e, cx) => { this.timelineOpen = false; this.open.add(e.task_id); this.refresh(cx); cx.notify(); })
+        .child(h_flex().gap(8).items_start()
+          .child(div().w(36).flex_none().text_size(11).text_color(t.dim).child(time))
+          .child(div().flex_1().min_w(0).text_size(12)
+            .child(h_flex().flex_wrap().gap(4)
+              .child(div().text_color(e.by === "you" ? t.accent : t.foreground).child(who))
+              .child(div().text_color(color).child(e.verb))
+              .child(div().text_color(t.foreground).child(`#${e.task_id} ${e.title}`))
+              .when(this.show.all, (el) => el.child(div().text_size(10).text_color(t.dim).child(e.project.split("/").pop())))))
+        )
+        .when(Boolean(e.detail), (el) => el.child(div().pl(44).text_size(11).text_color(e.what === "status:blocked" ? t.blocked : t.dim)
+          .child(e.detail.length > 240 ? `${e.detail.slice(0, 240)}…` : e.detail))));
+    }
+    return out;
   }
 
   // A task's title by id, from what's loaded (this repo, or every repo in All; archived ones too).
@@ -630,6 +684,10 @@ class Panel {
         .when(Boolean(name), (e) => e.child(div().min_w(0).px(5).py(1).rounded(4).border_1().border_color(t.border).text_size(10).text_color(t.muted).truncate().child(name)))
         .child(div().flex_1())
         .child(div().text_size(11).text_color(t.muted).child(`${done}/${counted.length}`))
+        .child(div().id("htask-timeline").px(6).py(2).rounded(5).text_size(11).cursor_pointer()
+          .text_color(this.timelineOpen ? t.foreground : t.muted).bg(this.timelineOpen ? t.raised : t.background)
+          .hover((s) => s.bg(t.hover)).tooltip("Who added, started, blocked or finished which task, newest first")
+          .on_click((_e, cx) => this.toggleTimeline(cx)).child("Timeline"))
         .child(div().id("htask-agents").px(6).py(2).rounded(5).text_size(11).cursor_pointer()
           .text_color(this.setupOpen ? t.foreground : t.muted).bg(this.setupOpen ? t.raised : t.background)
           .hover((s) => s.bg(t.hover)).tooltip("Connect Claude Code, Codex and Pi to htask")
@@ -656,7 +714,7 @@ class Panel {
               .tooltip(all ? "Every repo's tasks on this machine" : "Only the focused terminal's repo")
               .on_click((_e, cx) => { if (!on) this.flip("all", cx); }).child(label);
           })))
-        .children(FILTERS.map(([name, label]) => {
+        .children((this.timelineOpen ? [] : FILTERS).map(([name, label]) => {
           const on = this.show[name];
           return div().id(`show-${name}`).px(9).py(2).rounded(10).text_size(11).cursor_pointer().border_1()
             .border_color(on ? t.border : t.background).bg(on ? t.raised : t.background)
@@ -681,7 +739,8 @@ class Panel {
           .on_click((_e, cx) => this.dock(cx)).child(this.pendingDock ? "Adding…" : "Add to my layout"))))
       .child(div().flex_1().min_h(0).relative().mt(8)
         .child(v_flex().id("htask-list").absolute().inset_0().overflow_y_scroll().px(6).pb(8)
-          .children(shown.map(([title, rows, more, collapsible]) => v_flex().flex_none()
+          .when(this.timelineOpen, (e) => e.children(this.timelineRows(t)))
+          .children((this.timelineOpen ? [] : shown).map(([title, rows, more, collapsible]) => v_flex().flex_none()
             .child(div().px(8).pt(8).pb(3).text_size(10.5).font_semibold().text_color(t.dim).child(`${title.toUpperCase()}  ${rows.length + more}`))
             .children(rows.map((task) => this.row(task, t)))
             // Done's "Show N more" / "Show fewer" (remembered with the chips).
@@ -689,9 +748,9 @@ class Panel {
               .text_size(11).text_color(t.accent).cursor_pointer().hover((st) => st.bg(t.hover))
               .on_click((_e, cx) => this.flip("allDone", cx))
               .child(more > 0 ? `Show ${more} more` : "Show fewer")))))
-          .when(this.show.archived && !this.archived.length && Boolean(this.project) && !this.loading, (e) => e.child(
+          .when(!this.timelineOpen && this.show.archived && !this.archived.length && Boolean(this.project) && !this.loading, (e) => e.child(
             div().px(8).pt(8).text_size(11).text_color(t.dim).child(`Nothing archived in ${name}.`)))
-          .when(!shown.length, (e) => e.child(v_flex().p(8).gap(6).text_color(t.dim)
+          .when(!this.timelineOpen && !shown.length, (e) => e.child(v_flex().p(8).gap(6).text_color(t.dim)
             .child(empty)
             .when(!this.error && Boolean(this.project), (e) => e.child(
               div().px(8).py(5).rounded(6).bg(t.raised).text_size(11.5).text_color(t.muted).child('htask add "title" -d "what done looks like"')))

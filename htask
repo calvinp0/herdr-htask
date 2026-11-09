@@ -106,6 +106,10 @@ def connect() -> sqlite3.Connection:
     if "from_id" not in columns:
         with conn:
             conn.execute("ALTER TABLE tasks ADD COLUMN from_id INTEGER")
+    # v5: which terminal made each change, for the timeline.
+    if "pane_id" not in {r["name"] for r in conn.execute("PRAGMA table_info(changes)")}:
+        with conn:
+            conn.execute("ALTER TABLE changes ADD COLUMN pane_id TEXT")
     return conn
 
 
@@ -209,9 +213,14 @@ def _has_ancestor(name: str, depth: int = 30) -> bool:
     return False
 
 
+def _log(conn: sqlite3.Connection, task_id: int, what: str, by: str | None, detail: str | None = None,
+         pane: str | None = None) -> None:
+    conn.execute("INSERT INTO changes (task_id, at, by, what, detail, pane_id) VALUES (?,?,?,?,?,?)",
+                 (task_id, time.time(), by, what, detail, pane))
+
+
 def log_change(conn: sqlite3.Connection, args, task_id: int, what: str, detail: str | None = None) -> None:
-    conn.execute("INSERT INTO changes (task_id, at, by, what, detail) VALUES (?,?,?,?,?)",
-                 (task_id, time.time(), getattr(args, "by", None) or detect_agent(), what, detail))
+    _log(conn, task_id, what, getattr(args, "by", None) or detect_agent(), detail, origin_id())
 
 
 def origin_id() -> str | None:
@@ -416,6 +425,47 @@ def cmd_list(args) -> None:
             print(textwrap.indent("note: " + r["note"], " " * 16))
 
 
+# How a change reads in the timeline.
+VERBS = {"added": "added", "status:doing": "started", "status:done": "finished", "status:blocked": "blocked",
+         "status:todo": "moved back to to-do", "status:dropped": "dropped", "note": "left a note on",
+         "edit": "edited", "archive": "archived"}
+
+
+def timeline_events(conn: sqlite3.Connection, project: str | None, limit: int) -> list[dict]:
+    """The newest `limit` changes in a project (or every project with None), newest first."""
+    where, params = ("", ()) if project is None else (" WHERE t.project = ?", (project,))
+    rows = conn.execute(
+        "SELECT c.id, c.task_id, c.at, c.by, c.what, c.detail, c.pane_id, t.title, t.project FROM changes c"
+        f" JOIN tasks t ON t.id = c.task_id{where} ORDER BY c.id DESC LIMIT ?", (*params, limit)).fetchall()
+    return [{**dict(r), "verb": VERBS.get(r["what"], r["what"])} for r in rows]
+
+
+def cmd_timeline(args) -> None:
+    """A repo's task activity, newest first: who added, started, blocked or finished which task, when."""
+    conn = connect()
+    project = None if args.everywhere else _project_from_args(args)
+    events = timeline_events(conn, project, args.limit)
+    if args.json:
+        print(json.dumps({"project": project, "events": events}, indent=2))
+        return
+    if not events:
+        print("no activity yet" + ("" if args.everywhere else f" in {project}"))
+        return
+    today = time.localtime().tm_yday, time.localtime().tm_year
+    day = None
+    for e in events:
+        t = time.localtime(e["at"])
+        heading = ("Today" if (t.tm_yday, t.tm_year) == today
+                   else "Yesterday" if (t.tm_yday + 1, t.tm_year) == today else time.strftime("%a %d %b", t))
+        if heading != day:
+            print(("" if day is None else "\n") + heading)
+            day = heading
+        who = (e["by"] or "someone") + (f" ({e['pane_id']})" if e["pane_id"] else "")
+        repo = f" [{os.path.basename(e['project'])}]" if args.everywhere else ""
+        detail = f": {e['detail']}" if e["detail"] else ""
+        print(f"  {time.strftime('%H:%M', t)}  {who} {e['verb']} #{e['task_id']} {e['title']}{repo}{detail}")
+
+
 def cmd_depend(args) -> None:
     conn, project = connect(), _project_from_args(args)
     _get_task(conn, args.id, project)
@@ -487,6 +537,8 @@ def cmd_clean(args) -> None:
         return
     with writing(conn, project):
         conn.execute(f"UPDATE tasks SET archived_at = ? WHERE {where}", (now, *params))
+        for r in rows:
+            log_change(conn, args, r["id"], "archive")
     print(f"archived {len(rows)} task(s) in {scope}")
 
 
@@ -934,22 +986,33 @@ def _mirror(conn: sqlite3.Connection, project: str, agent: str, pane: str | None
         if row is None:
             if title is None:
                 return 0  # an update for a task created before the hook existed
-            conn.execute(
+            cur = conn.execute(
                 "INSERT INTO tasks (project, title, description, status, agent, pane_id,"
                 " created_at, updated_at, completed_at, external_id) VALUES (?,?,?,?,?,?,?,?,?,?)",
                 (project, title, description or "", status or "todo", agent, pane,
                  now, now, now if status == "done" else None, key))
+            log(cur.lastrowid, "added")
+            if status and status != "todo":
+                log(cur.lastrowid, f"status:{status}")
             return 1
         fields = {k: v for k, v in (("title", title), ("description", description), ("status", status)) if v is not None}
         if not fields:
             return 0
+        before = conn.execute("SELECT status FROM tasks WHERE id = ?", (row["id"],)).fetchone()["status"]
         fields["updated_at"] = now
         if status is not None:
             fields["completed_at"] = now if status == "done" else None
         conn.execute(f"UPDATE tasks SET {', '.join(f'{k} = ?' for k in fields)} WHERE id = ?",
                      (*fields.values(), row["id"]))
+        if status is not None and status != before:
+            log(row["id"], f"status:{status}")
         return 1
 
+    def log(task_id, what, detail=None):
+        """The timeline: hook-copied changes are logged too, as the agent and its terminal."""
+        _log(conn, task_id, what, agent, detail, pane)
+
+    upsert.log = log
     return upsert
 
 
@@ -962,11 +1025,14 @@ def _sync_full_list(conn: sqlite3.Connection, upsert, prefix: str, steps: list[t
     keys = [prefix + title for title, _ in steps]
     touched = sum(upsert(prefix + title, title, None, status) for title, status in steps)
     marks = ",".join("?" * len(keys)) or "''"
-    gone = conn.execute(
-        f"UPDATE tasks SET status = 'dropped', updated_at = ? WHERE substr(external_id, 1, ?) = ?"
+    gone = [r["id"] for r in conn.execute(
+        f"SELECT id FROM tasks WHERE substr(external_id, 1, ?) = ?"
         f" AND external_id NOT IN ({marks}) AND status NOT IN ('done', 'dropped') AND archived_at IS NULL",
-        (now, len(prefix), prefix, *keys)).rowcount
-    return touched + gone
+        (len(prefix), prefix, *keys))]
+    for task_id in gone:
+        conn.execute("UPDATE tasks SET status = 'dropped', updated_at = ? WHERE id = ?", (now, task_id))
+        upsert.log(task_id, "status:dropped", "left out of a revised plan")
+    return touched + len(gone)
 
 
 def sync_claude(event: dict, conn: sqlite3.Connection) -> int:
@@ -1428,6 +1494,12 @@ def main(argv=None) -> None:
     dp.set_defaults(fn=cmd_depend)
 
     sub.add_parser("next", help="the first to-do that isn't waiting on another task").set_defaults(fn=cmd_next)
+
+    tl = sub.add_parser("timeline", help="who added, started, blocked or finished which task, newest first")
+    tl.add_argument("--limit", type=int, default=40)
+    tl.add_argument("--everywhere", action="store_true", help="every repo, not just this one")
+    tl.add_argument("--json", action="store_true")
+    tl.set_defaults(fn=cmd_timeline)
 
     ls = sub.add_parser("list", help="list this project's open tasks")
     ls.add_argument("--all", action="store_true", help="include done/dropped")

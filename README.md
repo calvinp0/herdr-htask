@@ -74,6 +74,7 @@ Then open a space on the SSH machine and do the two steps above.
 - **Follow-ups:** `htask add … --from 31` marks where a task came from. It shows `from #31`.
 - **This repo / All** switches between the focused repo and every repo on the machine.
 - **Chips** show or hide To do, Done, Dropped and Archived.
+- **Timeline** shows who added, started, blocked or finished which task, newest first.
 - **Archive** puts away done tasks; reopen one to bring it back.
 - **Blocked tasks** raise a toast.
 

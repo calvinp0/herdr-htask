@@ -816,5 +816,42 @@ class CameFrom(Base):
         self.assertIn("itself", self.run_htask("edit", "1", "--from", "1", check=False).stderr)
 
 
+class Timeline(Base):
+    def events(self, *args, cwd=None):
+        return json.loads(self.run_htask("timeline", "--json", *args, cwd=cwd).stdout)["events"]
+
+    def test_who_did_what_newest_first(self):
+        self.env["HTASK_AGENT"] = "codex"
+        self.run_htask("add", "parser")
+        self.run_htask("start", "1")
+        self.run_htask("block", "1", "-m", "need samples")
+        self.run_htask("--by", "you", "done", "1", "--force")
+        ev = self.events()
+        self.assertEqual([(e["verb"], e["by"], e["pane_id"]) for e in ev],
+                         [("finished", "you", "w1:p1"), ("blocked", "codex", "w1:p1"),
+                          ("started", "codex", "w1:p1"), ("added", "codex", "w1:p1")])
+        self.assertEqual(ev[1]["detail"], "need samples")
+        text = self.run_htask("timeline").stdout
+        self.assertTrue(text.startswith("Today\n"))
+        self.assertIn("codex (w1:p1) blocked #1 parser: need samples", text)
+
+    def test_hook_copied_changes_are_logged(self):
+        event = {"session_id": "s1", "cwd": str(self.repo_a), "tool_name": "TaskCreate",
+                 "tool_input": {"subject": "from claude"}, "tool_response": {"task": {"id": "1"}}}
+        run = lambda e: subprocess.run([sys.executable, str(HTASK), "hook", "claude"], input=json.dumps(e),
+                                       env=self.env, capture_output=True, text=True, check=True)
+        run(event)
+        run({**event, "tool_name": "TaskUpdate", "tool_input": {"taskId": "1", "status": "completed"}})
+        run({**event, "tool_name": "TaskUpdate", "tool_input": {"taskId": "1", "status": "completed"}})  # no change
+        self.assertEqual([(e["verb"], e["by"]) for e in self.events()], [("finished", "claude"), ("added", "claude")])
+
+    def test_repo_scope_and_limit(self):
+        self.run_htask("add", "here")
+        self.run_htask("add", "there", cwd=self.repo_b)
+        self.assertEqual([e["title"] for e in self.events()], ["here"])
+        self.assertEqual(len(self.events("--everywhere")), 2)
+        self.assertEqual(len(self.events("--everywhere", "--limit", "1")), 1)
+
+
 if __name__ == "__main__":
     unittest.main()
