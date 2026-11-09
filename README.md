@@ -107,10 +107,12 @@ In the panel:
   In progress with that agent's live state (`t15 working`) and to Done when it finishes;
 - click a task's status dot to mark it done, or to reopen it;
 - type in the box at the bottom and press Enter to add a task for the next agent;
-- **? Explain…** on an open task asks an agent to look into it and write a short explanation
-  (what it involves, why, which parts of the code, what done looks like, open questions) into the
-  task's description, without starting it. Same choices as Run: the task's own agent if it's still
-  running (listed first), another agent in the repo, or a new tab;
+- **? Explain…** on an open task starts a conversation about it with an agent, without starting the
+  work: what it involves, why, which parts of the code, what done looks like, open questions, in as
+  much depth as it needs, in the agent's own terminal, where you can ask follow-ups or reframe it.
+  Same choices as Run: the task's own agent if it's still running (listed first), another agent in
+  the repo, or a new tab; either way you land in that conversation. When you're done, the agent
+  saves a short summary as the task's description;
 - a task that comes after unfinished ones shows `after #3`; Run warns about it, and finishing it
   takes **Done anyway** (the CLI refuses `htask done` out of order without `--force`);
 - in-progress and blocked tasks show their agent's live state (`t6 working`). Click it to jump to

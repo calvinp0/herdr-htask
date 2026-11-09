@@ -63,9 +63,10 @@ the agent that owns the task.
   connected` / `not installed` in `dim`) and a Connect / Finish / Disconnect button that runs
   `htask connect <agent> [--remove]` where the space runs; a toast reports what changed, with the
   backup names. The empty state offers "New here? Connect your agents…".
-- **? Explain…** (to do, in progress, blocked) opens the same kind of menu, "Ask for an explanation
-  in:", with the task's own agent first; the message asks the agent not to start the task but to
-  write a short explanation into its description with `htask edit <id> -d`.
+- **? Explain…** (to do, in progress, blocked) opens the same kind of menu, "Talk it through in:",
+  with the task's own agent first. The message asks the agent to explain the task in its own
+  conversation, as deep as needed, without starting it, to expect follow-ups, and at the end to save a
+  short summary with `htask edit <id> -d`. Asking a running agent also focuses it (`agent.focus`).
 - A to-do or in-progress task with unfinished dependencies shows a `dim` "after #3" tag; its Run
   menu starts with a red "Comes after #3, not done yet." line, its Done button reads **Done anyway**
   (`htask done <id> --force`), and clicking its status mark does nothing (the tooltip says why).

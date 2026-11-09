@@ -79,19 +79,22 @@ function taskMessage(task) {
     + `\`htask done ${task.id}\` once it's verified, or \`htask block ${task.id} -m "why"\` if you get stuck.`;
 }
 
-// Explain: ask an agent to look into a task and describe it, without starting it.
+// Explain: a conversation with an agent about a task, in its own terminal, as deep as it needs to go,
+// with room for follow-ups. The panel only gets a short summary at the end.
 function explainMessage(task) {
-  const now = task.description ? ` It currently says: "${task.description}". Keep what's still true.` : "";
-  return `Don't start on htask #${task.id} "${task.title}" yet. Explain it for the human:${now} Look at the repo `
-    + `as needed, then save a short explanation (under 120 words: what it involves, why, which parts of the code, `
-    + `what done looks like, open questions) with \`htask edit ${task.id} -d "<explanation>"\`, and reply with one line.`;
+  const now = task.description ? ` Its description so far: "${task.description}".` : "";
+  return `Explain htask #${task.id} "${task.title}" to me, and don't start working on it.${now} Look at the `
+    + `repo as needed and cover what it involves, why it's needed, which parts of the code it touches, what done `
+    + `looks like, and the open questions or risks, in as much depth as it needs. I may ask follow-ups or reframe `
+    + `the task. When we've finished discussing it, save a short summary (under 120 words) for the task panel with `
+    + `\`htask edit ${task.id} -d "<summary>"\`.`;
 }
 
 // The two task menus: what they're called, what each destination is called, and what gets sent.
 const MENUS = {
   run: { title: "Run this task in:", fresh: (a) => `New ${a.name} tab`, send: (addr, who) => `Send to ${addr} (${who})`,
          message: taskMessage, tab: (task) => task.title.slice(0, 40), sent: "Sent", verb: "Types this task into" },
-  explain: { title: "Ask for an explanation in:", fresh: (a) => `New ${a.name} tab`, send: (addr, who) => `Ask ${addr} (${who})`,
+  explain: { title: "Talk it through in:", fresh: (a) => `New ${a.name} tab`, send: (addr, who) => `Ask ${addr} (${who})`,
              message: explainMessage, tab: (task) => `Explain: ${task.title}`.slice(0, 40), sent: "Asked about", verb: "Asks" },
 };
 
@@ -359,7 +362,11 @@ class Panel {
     const m = MENUS[kind], there = { name: "agent.focus", args: { terminal: address } };
     cx.spawn(async () => {
       const r = await hc(["send", address, m.message(task)]).catch((e) => ({ code: 1, stderr: String(e?.message ?? e) }));
-      if (r.code === 0) notify({ title: `${m.sent} #${task.id} to ${address}`, body: task.title, level: "info", action: there });
+      if (r.code === 0) {
+        notify({ title: `${m.sent} #${task.id} to ${address}`, body: task.title, level: "info", action: there });
+        // An explanation is a conversation: take you there to read it and ask follow-ups.
+        if (kind === "explain") run("agent.focus", { terminal: address });
+      }
       else notify({ title: `Couldn't send to ${address}`, body: (r.stderr || r.stdout || "").trim(), level: "warning", action: there });
     });
     cx.notify();
