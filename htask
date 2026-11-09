@@ -28,7 +28,7 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 STATUSES = ("todo", "doing", "blocked", "done", "dropped")
 PLUGIN_ID = "calvin.htask"
 
