@@ -4,3 +4,4 @@ __pycache__/
 *.db-shm
 herdr-app/mods/*/gpui-kit.d.ts
 herdr-app/mods/*/jsconfig.json
+.axiomcode/
