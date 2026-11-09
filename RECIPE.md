@@ -48,10 +48,16 @@ the agent that owns the task.
   (this panel, Files) keeps the last repo. It redraws when `htask` writes (it watches
   `~/.local/share/herdr-tasks/signal/`), with a 15 s backstop; remote spaces poll every 5 s.
 - Click a task to open it: description, agent, terminal, "updated 5m ago", and buttons by status:
-  to do: Start, Block, Done, Drop; in progress: Done, Block, Back to to-do, Drop;
+  to do: ▸ Run…, Mark in progress, Block, Done, Drop; in progress: Done, Block, Back to to-do, Drop;
   blocked: Unblock, Done, Drop;
   done and dropped: Reopen, Archive. Click the status mark to mark done (or reopen a done task).
   Click a live agent tag to focus that agent.
+- **▸ Run…** on a to-do opens a menu under it, "Run this task in:", with one button per agent that
+  `knownAgents({ on })` reports installed ("New Claude Code tab", last pick first) and one per live
+  agent whose pane is in this repo ("Send to t6 (Pi, idle)", disabled while blocked). New tab:
+  `tab.new {name: title, folder: repo, argv: agent.run, task: message}`. Send: `hc send`. The
+  message names the task and asks the agent to run `htask start <id>` (which claims the task for
+  the agent's terminal), `htask done`, or `htask block`. Nothing is sent to an agent not chosen.
 - Every change you make runs `htask --by you ...`. If the task belongs to a live agent: Claude Code
   hears about it from its inbox hook at its next step (a toast says so); any other agent gets a
   `[Herdr task panel] ...` message typed into its terminal with `hc send`, which refuses while the

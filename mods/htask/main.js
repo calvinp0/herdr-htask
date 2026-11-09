@@ -3,7 +3,7 @@
 // Both read htask (one SQLite DB for every agent) and redraw when it writes or focus changes repo.
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, Scrollbar, InputState, Input } from "gpui-base";
-import { theme, props, run, agents, terminals, hc, notify, nextCommand, closeOverlay, settings } from "herdr";
+import { theme, props, run, agents, terminals, panes, hc, notify, nextCommand, closeOverlay, settings, knownAgents } from "herdr";
 import { htask, htaskError, qualify, location, watchSignal } from "./common.js";
 import { Chip } from "./chip.js";
 
@@ -55,7 +55,7 @@ const OWNER_WORD = { exited: "agent exited", gone: "terminal closed" };
 
 // The buttons an expanded task offers, by status: [label, htask command].
 const ACTIONS = {
-  todo: [["Start", "start"], ["Block", "block"], ["Done", "done"], ["Drop", "drop"]],
+  todo: [["Mark in progress", "start"], ["Block", "block"], ["Done", "done"], ["Drop", "drop"]],
   doing: [["Done", "done"], ["Block", "block"], ["Back to to-do", "reopen"], ["Drop", "drop"]],
   blocked: [["Unblock", "reopen"], ["Done", "done"], ["Drop", "drop"]],
   done: [["Reopen", "reopen"], ["Archive", "archive"]],
@@ -70,6 +70,14 @@ const TELL = {
   start: (ref) => `${ref} is marked in progress.`,
   block: (ref) => `${ref} is marked blocked. Hold off on it until the human unblocks it.`,
 };
+
+// The first message an agent started on a task gets: the task, and how to report on it. `htask
+// start` claims the task for the agent's terminal, so the panel shows it working.
+function taskMessage(task) {
+  const done = task.description ? ` Done looks like: ${task.description}.` : "";
+  return `Work on htask #${task.id} "${task.title}" in this repo.${done} Run \`htask start ${task.id}\` first, `
+    + `\`htask done ${task.id}\` once it's verified, or \`htask block ${task.id} -m "why"\` if you get stuck.`;
+}
 
 function ago(seconds) {
   const s = Math.max(0, Date.now() / 1000 - seconds);
@@ -94,6 +102,8 @@ class Panel {
     this.open = new Set(); this.width = 0;
     // Which sections show; remembered per panel copy. Archived tasks are only fetched while shown.
     this.show = loadShow(); this.archived = [];
+    // The Run menu: which to-do it's open for, and the agents installed where this space runs.
+    this.runFor = null; this.known = null;
     // Key commands for this mod, e.g. keys.json "mod:htask" or "global": "htask.toggle-done".
     cx.spawn(async (cx) => {
       for (;;) {
@@ -233,12 +243,73 @@ class Panel {
       .child(`${own.addr} ${OWNER_WORD[own.state] ?? own.state}`);
   }
 
+  // ▸ Run…: start an agent on a to-do. Nothing is routed implicitly: every choice names where the
+  // task goes, a new tab with an agent you pick, or one named agent already running in this repo.
+  toggleRun(task, cx) {
+    this.runFor = this.runFor === task.id ? null : task.id;
+    if (this.runFor !== null) {
+      const machine = this.machine;
+      cx.spawn(async (cx) => {
+        try { this.known = { machine, list: (await knownAgents({ on: machine })).filter((a) => a.installed) }; }
+        catch { this.known = { machine, list: [] }; }
+        cx.notify();
+      });
+    }
+    cx.notify();
+  }
+
+  launch(task, agent, cx) {
+    try { localStorage.setItem("lastRun", agent.key); } catch { /* not remembered */ }
+    this.runFor = null;
+    run("tab.new", { name: task.title.slice(0, 40), folder: this.project, argv: agent.run, task: taskMessage(task) });
+    cx.notify();
+  }
+
+  sendTo(task, address, cx) {
+    this.runFor = null;
+    const there = { name: "agent.focus", args: { terminal: address } };
+    cx.spawn(async () => {
+      const r = await hc(["send", address, taskMessage(task)]).catch((e) => ({ code: 1, stderr: String(e?.message ?? e) }));
+      if (r.code === 0) notify({ title: `Sent #${task.id} to ${address}`, body: task.title, level: "info", action: there });
+      else notify({ title: `Couldn't send to ${address}`, body: (r.stderr || r.stdout || "").trim(), level: "warning", action: there });
+    });
+    cx.notify();
+  }
+
+  runMenu(task, t) {
+    const button = (id, label, enabled, act, tip) => div().id(`run-${task.id}-${id}`).px(7).py(2).rounded(5)
+      .text_size(11).bg(t.raised).text_color(enabled ? t.foreground : t.dim)
+      .when(enabled, (e) => e.cursor_pointer().hover((s) => s.bg(t.hover)))
+      .when(Boolean(tip), (e) => e.tooltip(tip))
+      .on_click((_e, cx) => { cx.stop_propagation(); if (enabled) act(cx); }).child(label);
+    let last = null;
+    try { last = localStorage.getItem("lastRun"); } catch { /* none */ }
+    const known = this.known?.machine === this.machine ? this.known.list : null;
+    const fresh = (known ?? []).slice().sort((a, b) => Number(b.key === last) - Number(a.key === last));
+    const inRepo = (address) => (panes().find((p) => p.terminal === address)?.cwd ?? "").startsWith(this.project ?? "\0");
+    const running = agents().filter((a) => inRepo(a.address));
+    return v_flex().pl(22).pt(4).gap(4)
+      .child(div().text_size(10.5).text_color(t.dim).child("Run this task in:"))
+      .child(h_flex().flex_wrap().gap(5)
+        .when(known === null, (e) => e.child(div().text_size(11).text_color(t.dim).child("Looking for installed agents…")))
+        .when(known !== null && !fresh.length, (e) => e.child(div().text_size(11).text_color(t.dim).child("No installed agents found")))
+        .children(fresh.map((a) => button(`new-${a.key}`, `New ${a.name} tab`, true, (cx) => this.launch(task, a, cx),
+          `Opens a new tab here running ${a.name}, with this task as its first message`)))
+        .children(running.map((a) => button(`send-${a.address}`, `Send to ${a.address} (${a.program?.name ?? a.app ?? "agent"}, ${a.status})`,
+          a.status !== "blocked", (cx) => this.sendTo(task, a.address, cx),
+          a.status === "blocked" ? "It's waiting on a question" : `Types this task into ${a.address}`))));
+  }
+
   actions(task, t) {
-    return h_flex().pl(22).pt(4).gap(5).children((ACTIONS[task.status] ?? []).map(([label, cmd]) =>
-      div().id(`act-${task.id}-${cmd}`).px(7).py(2).rounded(5).text_size(11).cursor_pointer()
-        .bg(t.raised).text_color(t.foreground).hover((s) => s.bg(t.hover))
-        .on_click((_e, cx) => { cx.stop_propagation(); this.change(task, cmd, cx); })
-        .child(label)));
+    const button = (id, label, onClick) => div().id(`act-${task.id}-${id}`).px(7).py(2).rounded(5).text_size(11)
+      .cursor_pointer().bg(t.raised).text_color(t.foreground).hover((s) => s.bg(t.hover))
+      .on_click((_e, cx) => { cx.stop_propagation(); onClick(cx); }).child(label);
+    return v_flex()
+      .child(h_flex().flex_wrap().pl(22).pt(4).gap(5)
+        .when(task.status === "todo", (e) => e.child(button("run", this.runFor === task.id ? "▾ Run…" : "▸ Run…",
+          (cx) => this.toggleRun(task, cx))))
+        .children((ACTIONS[task.status] ?? []).map(([label, cmd]) => button(cmd, label, (cx) => this.change(task, cmd, cx)))))
+      .when(this.runFor === task.id && task.status === "todo", (e) => e.child(this.runMenu(task, t)));
   }
 
   row(task, t) {

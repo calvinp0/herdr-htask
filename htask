@@ -225,6 +225,12 @@ def set_status(args, status: str) -> None:
         # Any status change brings an archived task back.
         fields = {"status": status, "updated_at": now, "archived_at": None,
                   "completed_at": now if status == "done" else None}
+        # Whoever starts a task owns it: an agent started on a to-do from the panel (or picking up
+        # another session's task) claims it for its terminal, so the panel shows its live state.
+        if status == "doing" and origin_id():
+            fields["pane_id"] = origin_id()
+            if detect_agent():
+                fields["agent"] = detect_agent()
         if getattr(args, "message", None):
             fields["note"] = args.message
         sets = ", ".join(f"{k} = ?" for k in fields)

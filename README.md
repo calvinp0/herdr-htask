@@ -88,8 +88,14 @@ Then add it to your layout. Shipped layouts are read-only, so do this in your ow
 In the panel:
 
 - click a task to see its description, its agent and when it last changed, plus buttons for
-  Start, Block, Done, Unblock, Drop or Reopen (blocking from the panel has no reason; agents and
-  `htask block <id> -m "..."` can give one);
+  Mark in progress, Block, Done, Unblock, Drop or Reopen. These only change the task's status
+  (blocking from the panel has no reason; agents and `htask block <id> -m "..."` can give one);
+- on a to-do, **▸ Run…** starts an agent on it. Every choice says where it goes: **New Claude
+  tab**, **New Codex tab**, ... (the agents installed for that space) opens a new tab in the repo
+  with the task as the agent's first message; **Send to t6 (Pi, idle)** types it into an agent
+  already running in the repo. Nothing goes to an agent you didn't pick. The message asks the
+  agent to run `htask start <id>`, which claims the task for its terminal, so the task moves to
+  In progress with that agent's live state (`t15 working`) and to Done when it finishes;
 - click a task's status dot to mark it done, or to reopen it;
 - type in the box at the bottom and press Enter to add a task for the next agent;
 - in-progress and blocked tasks show their agent's live state (`t6 working`). Click it to jump to
@@ -213,7 +219,7 @@ hear about it.
 
 ```sh
 htask add "title" [-d "description"] [--status todo|doing|blocked|done|dropped]
-htask start|done|drop|reopen <id>...      # reopen = back to to-do (also unblocks)
+htask start|done|drop|reopen <id>...      # reopen = back to to-do (also unblocks); start claims the task for this terminal
 htask block <id> -m "what you need"
 htask note <id> "text"
 htask edit <id> [--title ...] [-d ...]

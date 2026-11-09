@@ -19,7 +19,8 @@ class Base(unittest.TestCase):
             subprocess.run(["git", "init", "-q", str(repo)], check=True)
         self.env = {**os.environ, "HTASK_DB": str(root / "t.db"), "HERDR_PANE_ID": "w1:p1"}
         # Never report to a real Herdr TUI the tests happen to run in.
-        for key in ("HTASK_PROJECT", "HERDR_ENV", "HERDR_WORKSPACE_ID", "HERDR_BIN_PATH"):
+        for key in ("HTASK_PROJECT", "HERDR_ENV", "HERDR_WORKSPACE_ID", "HERDR_BIN_PATH", "HC_TERMINAL_ID",
+                    "HTASK_AGENT", "CLAUDECODE"):
             self.env.pop(key, None)
 
     def tearDown(self):
@@ -71,6 +72,21 @@ class HtaskCLI(Base):
         self.run_htask("add", "--agent", "you", "--", "-fix the flag parser")
         (t,) = self.tasks()
         self.assertEqual((t["title"], t["agent"]), ("-fix the flag parser", "you"))
+
+    def test_start_claims_the_task_for_its_terminal(self):
+        self.env["HERDR_PANE_ID"] = ""            # added from the panel: no terminal
+        self.run_htask("--by", "you", "add", "queued")
+        self.env["HERDR_PANE_ID"] = "w1:p7"       # the agent started on it
+        self.env["HTASK_AGENT"] = "codex"
+        self.run_htask("start", "1")
+        (t,) = self.tasks()
+        self.assertEqual((t["pane_id"], t["agent"], t["status"]), ("w1:p7", "codex", "doing"))
+
+    def test_start_without_a_terminal_keeps_the_owner(self):
+        self.run_htask("add", "mine")             # made in w1:p1
+        self.env["HERDR_PANE_ID"] = ""            # the panel marks it in progress
+        self.run_htask("--by", "you", "start", "1")
+        self.assertEqual(self.tasks()[0]["pane_id"], "w1:p1")
 
     def test_list_hides_done_by_default(self):
         self.run_htask("add", "open")
