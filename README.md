@@ -5,23 +5,14 @@ what they're working on, what's blocked, and what's left. Agents record tasks wi
 `htask` CLI in one shared SQLite database. The panel follows the terminal you focus, shows that
 repo's tasks, and updates as soon as any agent writes.
 
-```
-Tasks  my-repo                       2/6
-████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░
+<p align="center">
+  <img src="docs/panel.png" width="420" alt="The Tasks panel in the Herdr desktop app: a blocked task with its reason, a task in progress, two to-do tasks and the five most recent done tasks, with a Tasks 8/12 button and a red dot in the tab bar">
+</p>
 
-BLOCKED  1
- ● #4  Add tests for the parser      t6 working
-       ↳ need sample outputs from the cluster
-IN PROGRESS  1
-›◐ #1  Parse the ORCA 6 output       this terminal
-       ↳ regex done for 6.0, 6.1 untested
-TO DO  2
- ○ #5  Update the docs
- ○ #6  Release notes
-DONE  2
- ✓ #3  Set up fixtures
- ✓ #2  Read the 6.x output format
-```
+The panel showing this repo's own tasks. The status bar gets a chip with the same count and how
+many tasks are blocked across all repos: <img src="docs/chip.png" height="22" alt="Status-bar chip: 8/12, 5 blocked">
+
+(The middle of the panel, which was empty, is cut out of the screenshot.)
 
 It works with both Herdr front ends:
 
