@@ -2,11 +2,15 @@
 
 [![tests](https://github.com/calvinp0/herdr-htask/actions/workflows/tests.yml/badge.svg)](https://github.com/calvinp0/herdr-htask/actions/workflows/tests.yml)
 
+<img src="docs/hero.png" alt="Illustration: in Herdr, a Claude Code session plans its work with htask add and blocks one step with htask block. Lines run from each command to the row it created in the Tasks panel beside it, the blocked one in red, with a Blocked toast and a status-bar chip reading 3/8, 1 blocked.">
+
 A side panel for [Herdr](https://herdr.dev) that shows what your coding agents have done, what
 they're doing, what's blocked and what's left. It follows the terminal you focus and updates live.
 
 It tracks the agents' own plans as they work, rather than a to-do list of what you ask for (for
 that, see mods like Over9k To-do).
+
+The picture above is an illustration. Here is the real panel, showing this repo's own tasks:
 
 <p align="center">
   <img src="preview.png" width="420" alt="The Tasks panel in the Herdr desktop app: To do, Done, Dropped and Archived filter chips, a blocked task with its reason, a task in progress, three to-do tasks, the five most recent done tasks with Show 5 more, and four archived ones, with a Tasks 10/15 button and a red dot in the tab bar">

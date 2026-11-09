@@ -1,0 +1,218 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<link href="https://fonts.googleapis.com/css2?family=Martian+Mono:wdth,wght@112.5,400;112.5,600;112.5,800&family=IBM+Plex+Sans:wght@400;500&display=block" rel="stylesheet">
+<style>
+  /* Herdr's own surfaces, and htask's status colours. Nothing else. */
+  :root {
+    --canvas: #0e1013; --win: #121418; --chrome: #0f1114; --pane: #15171b; --panel: #17191d;
+    --raised: #24272d; --sel: #1f2329; --border: #272a30;
+    --ink: #e7e8eb; --muted: #a3a7b0; --dim: #6c717b;
+    --done: #76a8ff; --working: #e2b860; --blocked: #ef6a5c;
+    --app: "JetBrains Mono", ui-monospace, monospace;
+    --mark: "Martian Mono", "JetBrains Mono", monospace;
+    --body: "IBM Plex Sans", system-ui, sans-serif;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 1600px; height: 900px; overflow: hidden; background: var(--canvas); }
+  body { color: var(--ink); font-family: var(--body); -webkit-font-smoothing: antialiased; position: relative; }
+
+  /* Top line: the name and one plain sentence */
+  .top { position: absolute; left: 80px; right: 80px; top: 46px; display: flex; align-items: baseline; gap: 26px; }
+  .mark { font-family: var(--mark); font-weight: 800; font-size: 40px; letter-spacing: -.02em; }
+  .say { font-size: 22px; color: var(--muted); }
+  .say b { color: var(--ink); font-weight: 500; }
+  .foot { position: absolute; left: 80px; right: 80px; bottom: 30px; display: flex; justify-content: space-between;
+    font-family: var(--mark); font-size: 12px; letter-spacing: .02em; color: var(--dim); }
+
+  /* The Herdr window */
+  .win { position: absolute; left: 80px; right: 80px; top: 124px; bottom: 70px; border-radius: 12px; overflow: hidden;
+    background: var(--win); border: 1px solid #2a2d33; box-shadow: 0 30px 80px rgba(0,0,0,.45); }
+  .tabs { height: 40px; display: flex; align-items: center; gap: 6px; padding: 0 10px; background: var(--chrome);
+    border-bottom: 1px solid var(--border); font-size: 13px; color: var(--muted); }
+  .tab { display: flex; align-items: center; gap: 8px; height: 28px; padding: 0 12px; border-radius: 7px; }
+  .tab.on { background: var(--raised); color: var(--ink); border: 1px solid var(--border); }
+  .grow { flex: 1; }
+  .pb { height: 26px; padding: 0 9px; border-radius: 6px; display: flex; align-items: center; gap: 6px; font-size: 12.5px; }
+  .pb.on { background: #20242b; color: var(--ink); }
+  .pb .n { color: var(--dim); } .pb .r { width: 6px; height: 6px; border-radius: 50%; background: var(--blocked); }
+  .wb { width: 26px; text-align: center; color: var(--dim); font-size: 14px; }
+  .spin { width: 11px; height: 11px; border-radius: 50%; border: 2px solid rgba(226,184,96,.25); border-top-color: var(--working); display: inline-block; flex: none; }
+
+  .body { position: absolute; top: 40px; bottom: 30px; left: 0; right: 0; display: flex; gap: 84px; padding: 10px; background: #0f1114; }
+
+  /* Agent terminal */
+  .term { flex: 1; min-width: 0; border-radius: 9px; background: var(--pane); border: 1px solid var(--border); position: relative; }
+  .ph { height: 30px; display: flex; align-items: center; gap: 8px; padding: 0 12px; border-bottom: 1px solid var(--border); font-size: 12px; color: var(--muted); }
+  .ph .a { font-family: var(--app); font-size: 11px; color: var(--dim); }
+  .ph .live { margin-left: auto; display: flex; align-items: center; gap: 6px; color: var(--working); font-size: 11.5px; }
+  .tty { padding: 16px 18px; font-family: var(--app); font-size: 13px; line-height: 1.75; color: #c6c9d0; white-space: pre; }
+  .tty .you { color: var(--ink); } .tty .pr { color: var(--done); } .tty .bul { color: var(--ink); }
+  .tty .d { color: var(--dim); } .tty .ok { color: #8fcf9d; } .tty .no { color: var(--blocked); } .tty .q { color: var(--working); }
+  .tty .cmd { color: var(--ink); background: #1d2026; border-radius: 4px; padding: 1px 4px; }
+  .cursor { display: inline-block; width: 8px; height: 16px; background: var(--ink); vertical-align: -3px; opacity: .8; }
+
+  /* Tasks panel: the real mod's look */
+  .panel { width: 400px; flex: none; border-radius: 9px; background: var(--panel); border: 1px solid var(--border); display: flex; flex-direction: column; overflow: hidden; }
+  .hd { height: 42px; display: flex; align-items: center; gap: 8px; padding: 0 14px; font-size: 11.5px; color: var(--muted); }
+  .hd .t { font-size: 14px; font-weight: 600; color: var(--ink); font-family: var(--body); }
+  .tag { font-size: 10.5px; border: 1px solid var(--border); border-radius: 4px; padding: 1px 6px; }
+  .bar { margin: 0 14px; height: 3px; border-radius: 2px; background: var(--border); }
+  .bar i { display: block; height: 100%; width: 37.5%; background: var(--done); border-radius: 2px; }
+  .chips { display: flex; gap: 6px; padding: 10px 14px 0; font-size: 11px; color: var(--dim); align-items: center; }
+  .seg { display: flex; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+  .seg span { padding: 2px 9px; } .seg .on, .chip.on { background: var(--raised); color: var(--ink); }
+  .chip { padding: 2px 9px; border-radius: 10px; border: 1px solid transparent; } .chip.on { border-color: var(--border); }
+  .list { padding: 6px; }
+  .sec { padding: 10px 8px 3px; font-size: 10.5px; font-weight: 500; letter-spacing: .03em; color: var(--dim); }
+  .row { padding: 5px 8px; border-radius: 7px; }
+  .row.sel { background: var(--sel); }
+  .ln { display: flex; gap: 8px; align-items: flex-start; }
+  .mk { width: 14px; height: 19px; display: grid; place-items: center; flex: none; }
+  .ring { width: 9px; height: 9px; border-radius: 50%; border: 1.5px solid var(--muted); }
+  .fill { width: 9px; height: 9px; border-radius: 50%; background: var(--blocked); }
+  .chk { color: var(--done); font-size: 12px; font-weight: 700; }
+  .ttl { flex: 1; min-width: 0; font-size: 13px; line-height: 19px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .done .ttl { color: var(--muted); }
+  .own { font-size: 10px; height: 19px; display: flex; align-items: center; flex: none; }
+  .own.w { color: var(--working); } .own.b { color: var(--blocked); }
+  .id { flex: none; height: 18px; padding: 0 5px; border-radius: 5px; background: var(--raised); font-family: var(--app); font-size: 10px; color: var(--muted); display: flex; align-items: center; }
+  .note { padding-left: 22px; font-size: 11.5px; color: var(--muted); line-height: 1.45; }
+  .note.r { color: var(--blocked); }
+  .lks { display: flex; gap: 5px; padding: 3px 0 0 22px; }
+  .lk { display: flex; align-items: center; gap: 5px; height: 20px; padding: 0 6px; border-radius: 6px; border: 1px solid var(--border); font-size: 10.5px; color: var(--muted); }
+  .lk .n { font-family: var(--app); } .lk.red { border-color: rgba(239,106,92,.4); background: rgba(239,106,92,.08); color: var(--blocked); }
+  .lk.red .x { color: var(--muted); }
+
+  .status { position: absolute; left: 0; right: 0; bottom: 0; height: 30px; display: flex; align-items: center; gap: 18px; padding: 0 14px;
+    background: var(--chrome); border-top: 1px solid var(--border); font-size: 12px; color: var(--dim); }
+  .status .grow { flex: 1; }
+  .schip { display: flex; gap: 8px; color: var(--ink); } .schip .r { color: var(--blocked); }
+
+  .toast { position: absolute; right: 18px; bottom: 18px; width: 300px; padding: 11px 13px; border-radius: 10px;
+    background: #1c1f25; border: 1px solid #353943; box-shadow: 0 14px 40px rgba(0,0,0,.5); }
+  .toast .tt { font-size: 13px; font-weight: 500; color: var(--ink); display: flex; gap: 8px; align-items: center; }
+  .toast .tt i { width: 7px; height: 7px; border-radius: 50%; background: var(--blocked); display: block; }
+  .toast .tb { margin-top: 4px; font-size: 12px; color: var(--muted); }
+
+  /* The connectors: drawn by the script from each command to the row it made */
+  svg.wires { position: absolute; inset: 0; pointer-events: none; overflow: visible; }
+  .lbl { position: absolute; font-family: var(--mark); font-size: 10.5px; letter-spacing: .04em; padding: 2px 6px; border-radius: 4px;
+    background: var(--canvas); transform: translate(-50%, -50%); white-space: nowrap; }
+</style>
+</head>
+<body>
+  <div class="top">
+    <span class="mark">htask</span>
+    <span class="say">Your agents keep a task list. <b>Herdr shows it beside them.</b></span>
+  </div>
+
+  <div class="win" id="win">
+    <div class="tabs">
+      <div class="tab on"><span class="spin"></span>ORCA 6.1 support</div>
+      <div class="tab">fixtures</div>
+      <div class="grow"></div>
+      <div class="pb">Files</div><div class="pb">Changes</div>
+      <div class="pb on">Tasks <span class="n">3/8</span><span class="r"></span></div>
+      <span class="wb">–</span><span class="wb">□</span><span class="wb">×</span>
+    </div>
+
+    <div class="body">
+      <div class="term">
+        <div class="ph">Claude Code <span class="a">t3</span><span class="live"><span class="spin"></span>working</span></div>
+<div class="tty"><span class="pr">&gt;</span> <span class="you">Add ORCA 6.1 support to the parser</span>
+
+<span class="bul">●</span> Three steps, recorded so they show in the panel:
+  <span class="cmd" data-to="12" data-kind="add">htask add "Parse the 6.1 energy block"</span>
+  <span class="cmd" data-to="13">htask add "Add tests for 6.1" --after 12</span>
+  <span class="cmd" data-to="14">htask add "Release notes" --after 12</span>
+
+<span class="bul">●</span> Starting on #12.
+  <span class="d">⎿</span> Edit  src/orca/energy.py  <span class="ok">+42</span> <span class="no">−8</span>
+  <span class="d">⎿</span> Run   pytest tests/test_energy.py   <span class="ok">18 passed</span>
+
+<span class="bul">●</span> The tests for #13 need real 6.1 output files,
+  and the repo has none.
+  <span class="cmd" data-to="13" data-kind="block">htask block 13 -m "need 6.1 sample outputs"</span>
+
+<span class="bul">●</span> Back to the energy block.
+<span class="cursor"></span></div>
+        <div class="toast"><div class="tt"><i></i>Blocked: Add tests for 6.1</div><div class="tb">orca-parser #13 · need 6.1 sample outputs</div></div>
+      </div>
+
+      <div class="panel">
+        <div class="hd"><span class="t">Tasks</span><span class="tag">orca-parser</span><span class="grow"></span><span>3/8</span><span>Timeline</span><span>Agents</span></div>
+        <div class="bar"><i></i></div>
+        <div class="chips"><div class="seg"><span class="on">orca-parser</span><span>All</span></div><span class="chip on">To do</span><span class="chip on">Done</span><span class="chip">Archived</span></div>
+        <div class="list">
+          <div class="sec">BLOCKED 1</div>
+          <div class="row" data-id="13">
+            <div class="ln"><span class="mk"><span class="fill"></span></span><span class="ttl">Add tests for 6.1</span><span class="own b">t3 blocked</span><span class="id">#13</span></div>
+            <div class="note r">↳ need 6.1 sample outputs</div>
+          </div>
+          <div class="sec">IN PROGRESS 2</div>
+          <div class="row sel" data-id="12">
+            <div class="ln"><span class="mk"><span class="spin"></span></span><span class="ttl">Parse the 6.1 energy block</span><span class="own w">t3 working</span><span class="id">#12</span></div>
+            <div class="note">↳ 18 tests pass; SCF block next</div>
+          </div>
+          <div class="row">
+            <div class="ln"><span class="mk"><span class="spin"></span></span><span class="ttl">Fixtures from the cluster</span><span class="own w">t6 working</span><span class="id">#16</span></div>
+            <div class="lks"><span class="lk">↳ from <span class="n">#13</span> Add tests for 6.1</span></div>
+          </div>
+          <div class="sec">TO DO 2</div>
+          <div class="row" data-id="14">
+            <div class="ln"><span class="mk"><span class="ring"></span></span><span class="ttl">Release notes</span><span class="id">#14</span></div>
+            <div class="lks"><span class="lk red">waits for <span class="n">#12</span> <span class="x">Parse the 6.1 energy block</span></span></div>
+          </div>
+          <div class="row">
+            <div class="ln"><span class="mk"><span class="ring"></span></span><span class="ttl">Benchmark large outputs</span><span class="id">#15</span></div>
+          </div>
+          <div class="sec">DONE 3</div>
+          <div class="row done"><div class="ln"><span class="mk"><span class="chk">✓</span></span><span class="ttl">Read the 6.x output format</span><span class="id">#11</span></div></div>
+          <div class="row done"><div class="ln"><span class="mk"><span class="chk">✓</span></span><span class="ttl">Pin the 5.x fixtures</span><span class="id">#10</span></div></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="status"><span>⎇ feat/orca-6.1</span><span>2 agents</span><span class="grow"></span><span class="schip">☰ 3/8 <span class="r">● 1 blocked</span></span></div>
+    <svg class="wires" id="wires"></svg>
+  </div>
+
+  <div class="foot"><span>a mod for Herdr</span><span>github.com/calvinp0/herdr-htask</span></div>
+
+<script>
+  // One wire per command: from the end of the command to the row it made. Blocking is red.
+  document.fonts.ready.then(() => {
+    const win = document.getElementById("win"), svg = document.getElementById("wires"), box = win.getBoundingClientRect();
+    const NS = "http://www.w3.org/2000/svg";
+    const css = getComputedStyle(document.documentElement);
+    const color = { add: css.getPropertyValue("--muted").trim(), block: css.getPropertyValue("--blocked").trim() };
+    const labels = [];
+    document.querySelectorAll(".cmd[data-to]").forEach((cmd, i) => {
+      const kind = cmd.dataset.kind === "block" ? "block" : "add";
+      const row = document.querySelector(`.row[data-id="${cmd.dataset.to}"] .ln`);
+      const a = cmd.getBoundingClientRect(), b = row.getBoundingClientRect();
+      const x1 = a.right - box.left + 6, y1 = a.top + a.height / 2 - box.top;
+      const x2 = b.left - box.left - 8, y2 = b.top + 9.5 - box.top;
+      // Each wire bends at its own x, so the curves cross cleanly instead of piling up.
+      const mid = x2 - 22 - i * 15, r = 14;
+      const path = document.createElementNS(NS, "path");
+      path.setAttribute("d", `M ${x1} ${y1} H ${mid - r} C ${mid} ${y1}, ${mid} ${y2}, ${mid + r} ${y2} H ${x2}`);
+      path.setAttribute("fill", "none");
+      path.setAttribute("stroke", color[kind]);
+      path.setAttribute("stroke-width", kind === "block" ? "1.6" : "1.1");
+      path.setAttribute("stroke-opacity", kind === "block" ? "0.95" : "0.55");
+      svg.appendChild(path);
+      for (const [cx, cy] of [[x1, y1], [x2, y2]]) {
+        const dot = document.createElementNS(NS, "circle");
+        dot.setAttribute("cx", cx); dot.setAttribute("cy", cy); dot.setAttribute("r", kind === "block" ? 3 : 2.5);
+        dot.setAttribute("fill", color[kind]);
+        svg.appendChild(dot);
+      }
+    });
+    document.body.dataset.ready = "1";
+  });
+</script>
+</body>
+</html>

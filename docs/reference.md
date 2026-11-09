@@ -111,6 +111,18 @@ the panel reads. After each write htask rewrites `signal/changed` beside it, whi
 
 Example: `sqlite3 ~/.local/share/herdr-tasks/tasks.db 'select status, count(*) from tasks group by 1'`
 
+## Pictures
+
+- `preview.png` is a real screenshot of the panel (the herdr.dev listing uses it too).
+- `docs/hero.png` is an illustration, drawn in `docs/hero.html` with the panel's real colours and
+  layout. After changing the panel, update the HTML and re-render it:
+
+  ```sh
+  google-chrome --headless=new --hide-scrollbars --force-device-scale-factor=2 --window-size=1600,1100 \
+    --virtual-time-budget=8000 --screenshot=/tmp/hero.png "file://$PWD/docs/hero.html"
+  # then crop to the top 3200x1800 pixels and save it as docs/hero.png
+  ```
+
 ## Tests
 
 ```sh
