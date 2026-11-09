@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import os
 import sqlite3
 import subprocess
@@ -356,24 +357,26 @@ def cmd_doctor(args) -> None:
               f"~/.local/bin/{name} -> this checkout",
               f"~/.local/bin/{name} is missing or points elsewhere: run ./install.sh")
 
-    settings = home / ".claude" / "settings.json"
-    if settings.exists():
+    codex_hooks = Path(os.environ.get("CODEX_HOME") or home / ".codex") / "hooks.json"
+    for agent, settings in (("Claude", home / ".claude" / "settings.json"), ("Codex", codex_hooks)):
+        if not settings.exists():
+            continue
         try:
             hooks = json.loads(settings.read_text()).get("hooks", {})
         except ValueError:
             hooks = {}
         commands = [h.get("command", "") for entries in hooks.values() for e in entries
-                    for h in e.get("hooks", []) if any(k in h.get("command", "") for k in ("htask", "claude-inbox"))]
+                    for h in e.get("hooks", []) if _hook_kind(h.get("command", ""))]
         if not commands:
-            print("  --  no htask hooks in ~/.claude/settings.json (optional, see README)")
+            print(f"  --  no htask hooks in {settings} (optional: htask connect {agent.lower()})")
         for command in commands:
             exe = Path(os.path.expanduser(command.split()[0]))
-            check(exe.exists(), f"Claude hook runs {command}",
-                  f"Claude hook runs {command}, which doesn't exist")
+            check(exe.exists(), f"{agent} hook runs {command}",
+                  f"{agent} hook runs {command}, which doesn't exist: run ./install.sh")
             if exe.exists() and str(repo) in os.path.realpath(os.path.expanduser(command.split()[0])) \
                     and ".local/bin" not in command:
-                check(False, "", f"Claude hook names the checkout directly ({command}): "
-                                 "use ~/.local/bin/htask-claude-inbox so moving the folder can't break it")
+                check(False, "", f"{agent} hook names the checkout directly ({command}): "
+                                 f"run htask connect {agent.lower()} so moving the folder can't break it")
 
     app_mod = Path(os.environ.get("HERDR_APP_HOME", home / ".config" / "herdr-app")) / "mods" / "htask"
     if app_mod.exists():
@@ -450,29 +453,112 @@ the Herdr task panel. Tasks are scoped to the current git repo.
 - A message starting with `[Herdr task panel]` means the human changed one of your tasks: follow it and update your plan.
 """
 
+CODEX_INSTRUCTIONS = """## Task tracking (htask)
+
+The Herdr task panel shows your plan. For any task with more than one step:
+
+- **Plan with your `update_plan` tool** as usual (short step names) and keep the statuses current.
+  A hook copies the plan into the panel. Don't also `htask add` those steps.
+- **If `update_plan` isn't available:** use the `htask` CLI itself: `htask add "<short title>" -d
+  "<what done looks like>"` for each step, `htask start <id>` before working on one, `htask done
+  <id>` after verifying it.
+
+Either way, use the `htask` CLI for (ids come from `htask list`):
+- `htask list` at the start, to pick up open tasks earlier sessions left in this repo.
+- `htask note <id> "<progress, findings, next step>"` to leave information for the human.
+- `htask block <id> -m "<what you need>"` when you are waiting on the user or something external. This notifies the human.
+- A message starting with `[Herdr task panel]` means the human changed one of your tasks: follow it, and update your plan to match so your next update doesn't undo it.
+"""
+
 CONNECT_AGENTS = {
     "claude": ("Claude Code", ".claude", "CLAUDE.md", CLAUDE_INSTRUCTIONS),
-    "codex": ("Codex", ".codex", "AGENTS.md", AGENT_INSTRUCTIONS),
+    "codex": ("Codex", ".codex", "AGENTS.md", CODEX_INSTRUCTIONS),
     "pi": ("Pi", ".pi/agent", "AGENTS.md", AGENT_INSTRUCTIONS),
 }
 
 
-def claude_hooks() -> list[tuple[str, str | None, str, str]]:
-    """(event, matcher, command, kind) for the Claude Code hooks, kind being how to recognise one."""
-    bin_dir = Path.home() / ".local" / "bin"
-    return [
-        ("PostToolUse", "TaskCreate|TaskUpdate|TodoWrite", f"{bin_dir / 'htask'} hook claude", "mirror"),
-        ("PostToolUse", "*", str(bin_dir / "htask-claude-inbox"), "inbox"),
-        ("UserPromptSubmit", None, str(bin_dir / "htask-claude-inbox"), "inbox"),
-    ]
+def agent_hooks(key: str) -> tuple[Path, list[tuple[str, str | None, str, str]]] | None:
+    """Where an agent's hooks live, and htask's: (event, matcher, command, kind) each. None: no hooks."""
+    home, bin_dir = Path.home(), Path.home() / ".local" / "bin"
+    if key == "claude":
+        return home / ".claude" / "settings.json", [
+            ("PostToolUse", "TaskCreate|TaskUpdate|TodoWrite", f"{bin_dir / 'htask'} hook claude", "mirror"),
+            ("PostToolUse", "*", str(bin_dir / "htask-claude-inbox"), "inbox"),
+            ("UserPromptSubmit", None, str(bin_dir / "htask-claude-inbox"), "inbox"),
+        ]
+    if key == "codex":
+        codex_home = Path(os.environ.get("CODEX_HOME") or home / ".codex")
+        return codex_home / "hooks.json", [
+            ("PostToolUse", "^update_plan$", f"{bin_dir / 'htask'} hook codex", "mirror"),
+        ]
+    return None
 
 
 def _hook_kind(command: str) -> str | None:
     if "claude-inbox" in command:
         return "inbox"
-    if "htask" in command and "hook claude" in command:
+    if "htask" in command and ("hook claude" in command or "hook codex" in command):
         return "mirror"
     return None
+
+
+def codex_hooks_enabled() -> bool:
+    """Codex runs hooks only with [features] hooks = true in its config.toml."""
+    config = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex") / "config.toml"
+    try:
+        import tomllib
+        return bool(tomllib.loads(config.read_text()).get("features", {}).get("hooks"))
+    except (ImportError, OSError, ValueError):
+        return False
+
+
+def _apply_hooks(path: Path, specs, remove: bool) -> str | None:
+    """Add htask's hooks to (or take them out of) a Claude/Codex hooks JSON file. Returns what changed."""
+    try:
+        data = json.loads(path.read_text()) if path.exists() else {}
+    except ValueError:
+        raise SystemExit(f"htask: {path} isn't valid JSON; not touching it")
+    hooks = data.setdefault("hooks", {})
+    changed = False
+    if remove:
+        for event in list(hooks):
+            kept = []
+            for e in hooks[event]:
+                ours = [h for h in e.get("hooks", []) if _hook_kind(h.get("command", ""))]
+                changed |= bool(ours)
+                e["hooks"] = [h for h in e.get("hooks", []) if not _hook_kind(h.get("command", ""))]
+                if e["hooks"]:
+                    kept.append(e)
+            hooks[event] = kept
+            if not kept:
+                del hooks[event]
+        if not hooks:
+            del data["hooks"]
+    else:
+        for event, matcher, command, kind in specs:
+            entries = hooks.setdefault(event, [])
+            match = None
+            for e in entries:
+                for h in e.get("hooks", []):
+                    if _hook_kind(h.get("command", "")) == kind and (e.get("matcher") == matcher or kind == "mirror"):
+                        match = h
+            if match is None:
+                entry = {"hooks": [{"type": "command", "command": command, "timeout": 10}]}
+                if matcher is not None:
+                    entry = {"matcher": matcher, **entry}
+                entries.append(entry)
+                changed = True
+            elif match.get("command") != command:
+                match["command"] = command  # an old path (inside the checkout): use the stable link
+                changed = True
+    # Write only when a hook was actually added, repointed or removed: never just to reformat.
+    if not changed:
+        return None
+    after = json.dumps(data, indent=2, ensure_ascii=False) + "\n"
+    backup = _backup(path)
+    path.write_text(after)
+    json.loads(path.read_text())  # never leave it unparseable
+    return f"{'removed' if remove else 'set up'} the htask hooks in {path}" + (f" (backup: {backup.name})" if backup else "")
 
 
 def _backup(path: Path) -> Path | None:
@@ -515,23 +601,25 @@ def connect_status() -> dict:
         entry = {"name": name, "available": available, "instructions": instructions,
                  "file": str(instructions_file)}
         parts = [instructions]
-        if key == "claude":
-            found = {"mirror": False, "inbox_post": False, "inbox_prompt": False}
-            settings = home / ".claude" / "settings.json"
+        spec = agent_hooks(key)
+        if spec:
+            path, specs = spec
+            wanted = {(ev, kind) for ev, _m, _c, kind in specs}
+            found = dict.fromkeys(sorted(f"{kind}:{ev}" for ev, kind in wanted), False)
             try:
-                hooks = json.loads(settings.read_text()).get("hooks", {}) if settings.exists() else {}
+                hooks = json.loads(path.read_text()).get("hooks", {}) if path.exists() else {}
             except ValueError:
                 hooks = {}
             for event, entries in hooks.items():
                 for e in entries:
                     for h in e.get("hooks", []):
                         kind = _hook_kind(h.get("command", ""))
-                        if kind == "mirror":
-                            found["mirror"] = True
-                        elif kind == "inbox":
-                            found["inbox_post" if event == "PostToolUse" else "inbox_prompt"] = True
+                        if (event, kind) in wanted:
+                            found[f"{kind}:{event}"] = True
             entry["hooks"] = found
             parts += list(found.values())
+        if key == "codex":
+            entry["hooks_enabled"] = codex_hooks_enabled()
         entry["connected"] = available and all(parts)
         entry["partial"] = available and any(parts) and not all(parts)
         out[key] = entry
@@ -559,54 +647,22 @@ def connect_agent(key: str, remove: bool = False) -> list[str]:
         sep = "" if not current or current.endswith("\n\n") else ("\n" if current.endswith("\n") else "\n\n")
         path.write_text(f"{current}{sep}{MARK_START}\n{text}{MARK_END}\n")
         done.append(f"added the htask section to {path}" + (f" (backup: {backup.name})" if backup else ""))
+    elif not remove and MARK_START in current and MARK_END in current:
+        # Our own marked section from an older htask: bring it up to date. Hand-written ones stay.
+        start, end = current.index(MARK_START), current.index(MARK_END) + len(MARK_END)
+        block = f"{MARK_START}\n{text}{MARK_END}"
+        if current[start:end] != block:
+            backup = _backup(path)
+            path.write_text(current[:start] + block + current[end:])
+            done.append(f"updated the htask section in {path} (backup: {backup.name})")
 
-    if key == "claude":
-        settings = home / ".claude" / "settings.json"
-        try:
-            data = json.loads(settings.read_text()) if settings.exists() else {}
-        except ValueError:
-            raise SystemExit(f"htask: {settings} isn't valid JSON; not touching it")
-        hooks = data.setdefault("hooks", {})
-        if remove:
-            for event in list(hooks):
-                kept = []
-                for e in hooks[event]:
-                    e["hooks"] = [h for h in e.get("hooks", []) if not _hook_kind(h.get("command", ""))]
-                    if e["hooks"]:
-                        kept.append(e)
-                hooks[event] = kept
-                if not kept:
-                    del hooks[event]
-            if not hooks:
-                del data["hooks"]
-        else:
-            changed = False
-            for event, matcher, command, kind in claude_hooks():
-                entries = hooks.setdefault(event, [])
-                match = None
-                for e in entries:
-                    for h in e.get("hooks", []):
-                        if _hook_kind(h.get("command", "")) == kind and (e.get("matcher") == matcher or kind == "mirror"):
-                            match = h
-                if match is None:
-                    entry = {"hooks": [{"type": "command", "command": command, "timeout": 10}]}
-                    if matcher is not None:
-                        entry = {"matcher": matcher, **entry}
-                    entries.append(entry)
-                    changed = True
-                elif match.get("command") != command:
-                    match["command"] = command  # an old path (inside the checkout): use the stable link
-                    changed = True
-        # Write only when the JSON actually differs, so reconnecting is a no-op.
-        if remove or changed:
-            before = settings.read_text() if settings.exists() else None
-            after = json.dumps(data, indent=2, ensure_ascii=False) + "\n"
-            if after != before:
-                backup = _backup(settings)
-                settings.write_text(after)
-                json.loads(settings.read_text())  # never leave it unparseable
-                done.append(f"{'removed' if remove else 'set up'} the htask hooks in {settings}"
-                            + (f" (backup: {backup.name})" if backup else ""))
+    spec = agent_hooks(key)
+    if spec:
+        changed = _apply_hooks(spec[0], spec[1], remove)
+        if changed:
+            done.append(changed)
+    if key == "codex" and not remove and not codex_hooks_enabled():
+        done.append("note: Codex runs hooks only with [features] hooks = true in its config.toml; add it to mirror plans")
     return done
 
 
@@ -628,12 +684,67 @@ def cmd_connect(args) -> None:
         print(f"{name}: " + ("; ".join(done) if done else ("nothing to remove" if args.remove else "already connected")))
     if not args.remove:
         print("Agents started from now on pick it up; running ones keep their old setup until restarted.")
+        if "codex" in targets:
+            print("Codex asks you to approve a new hook the next time it starts.")
 
 
 # --- agent hooks ---------------------------------------------------------------
 
 # Claude Code's task statuses, and the older TodoWrite list's.
 CLAUDE_STATUS = {"pending": "todo", "in_progress": "doing", "completed": "done", "deleted": "dropped"}
+
+
+def _mirror(conn: sqlite3.Connection, project: str, agent: str, pane: str | None, now: float):
+    """An upsert for tasks mirrored from an agent's own task list, keyed by external_id."""
+
+    def upsert(key, title=None, description=None, status=None) -> int:
+        row = conn.execute("SELECT id FROM tasks WHERE external_id = ?", (key,)).fetchone()
+        if row is None and title is not None:
+            # The agent may have run `htask add` for the same step too (a session without the task
+            # tool falls back to htask; a confused one does both). Link to that task instead of
+            # adding a duplicate: same repo, same terminal, same title, not yet linked, not archived.
+            row = conn.execute(
+                "SELECT id FROM tasks WHERE external_id IS NULL AND archived_at IS NULL AND project = ?"
+                " AND pane_id IS ? AND lower(trim(title)) = lower(trim(?)) ORDER BY id DESC LIMIT 1",
+                (project, pane, title)).fetchone()
+            if row is not None:
+                conn.execute("UPDATE tasks SET external_id = ? WHERE id = ?", (key, row["id"]))
+        if row is None:
+            if title is None:
+                return 0  # an update for a task created before the hook existed
+            conn.execute(
+                "INSERT INTO tasks (project, title, description, status, agent, pane_id,"
+                " created_at, updated_at, completed_at, external_id) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (project, title, description or "", status or "todo", agent, pane,
+                 now, now, now if status == "done" else None, key))
+            return 1
+        fields = {k: v for k, v in (("title", title), ("description", description), ("status", status)) if v is not None}
+        if not fields:
+            return 0
+        fields["updated_at"] = now
+        if status is not None:
+            fields["completed_at"] = now if status == "done" else None
+        conn.execute(f"UPDATE tasks SET {', '.join(f'{k} = ?' for k in fields)} WHERE id = ?",
+                     (*fields.values(), row["id"]))
+        return 1
+
+    return upsert
+
+
+def _sync_full_list(conn: sqlite3.Connection, upsert, prefix: str, steps: list[tuple[str, str]], now: float) -> int:
+    """Mirror a list the agent resends whole each time (TodoWrite, Codex update_plan).
+
+    Steps are keyed by text under `prefix`. A step this session listed before but has now left out
+    was revised away: it's marked dropped, unless it was already done.
+    """
+    keys = [prefix + title for title, _ in steps]
+    touched = sum(upsert(prefix + title, title, None, status) for title, status in steps)
+    marks = ",".join("?" * len(keys)) or "''"
+    gone = conn.execute(
+        f"UPDATE tasks SET status = 'dropped', updated_at = ? WHERE substr(external_id, 1, ?) = ?"
+        f" AND external_id NOT IN ({marks}) AND status NOT IN ('done', 'dropped') AND archived_at IS NULL",
+        (now, len(prefix), prefix, *keys)).rowcount
+    return touched + gone
 
 
 def sync_claude(event: dict, conn: sqlite3.Connection) -> int:
@@ -647,37 +758,7 @@ def sync_claude(event: dict, conn: sqlite3.Connection) -> int:
     resp = event.get("tool_response") or {}
     session, now = event.get("session_id") or "unknown", time.time()
     project = project_root(event.get("cwd") or os.getcwd())
-
-    def upsert(key, title=None, description=None, status=None) -> int:
-        row = conn.execute("SELECT id FROM tasks WHERE external_id = ?", (key,)).fetchone()
-        if row is None and title is not None:
-            # Claude may have run `htask add` for the same step too (a session without the task
-            # tool falls back to htask; a confused one does both). Link to that task instead of
-            # adding a duplicate: same repo, same terminal, same title, not yet linked, not archived.
-            row = conn.execute(
-                "SELECT id FROM tasks WHERE external_id IS NULL AND archived_at IS NULL AND project = ?"
-                " AND pane_id IS ? AND lower(trim(title)) = lower(trim(?)) ORDER BY id DESC LIMIT 1",
-                (project, origin_id(), title)).fetchone()
-            if row is not None:
-                conn.execute("UPDATE tasks SET external_id = ? WHERE id = ?", (key, row["id"]))
-        if row is None:
-            if title is None:
-                return 0  # an update for a task created before the hook existed
-            conn.execute(
-                "INSERT INTO tasks (project, title, description, status, agent, pane_id,"
-                " created_at, updated_at, completed_at, external_id) VALUES (?,?,?,?,?,?,?,?,?,?)",
-                (project, title, description or "", status or "todo", "claude", origin_id(),
-                 now, now, now if status == "done" else None, key))
-            return 1
-        fields = {k: v for k, v in (("title", title), ("description", description), ("status", status)) if v is not None}
-        if not fields:
-            return 0
-        fields["updated_at"] = now
-        if status is not None:
-            fields["completed_at"] = now if status == "done" else None
-        conn.execute(f"UPDATE tasks SET {', '.join(f'{k} = ?' for k in fields)} WHERE id = ?",
-                     (*fields.values(), row["id"]))
-        return 1
+    upsert = _mirror(conn, project, "claude", origin_id(), now)
 
     prefix = f"claude:{session}:"
     if tool == "TaskCreate":
@@ -689,10 +770,64 @@ def sync_claude(event: dict, conn: sqlite3.Connection) -> int:
         return upsert(prefix + str(inp["taskId"]), inp.get("subject"), inp.get("description"),
                       CLAUDE_STATUS.get(inp.get("status")))
     if tool == "TodoWrite":
-        return sum(upsert(prefix + "todo:" + t.get("content", ""), t.get("content", ""), None,
-                          CLAUDE_STATUS.get(t.get("status"), "todo"))
-                   for t in inp.get("todos") or [] if t.get("content"))
+        steps = [(t["content"], CLAUDE_STATUS.get(t.get("status"), "todo"))
+                 for t in inp.get("todos") or [] if t.get("content")]
+        return _sync_full_list(conn, upsert, prefix + "todo:", steps, now)
     return 0
+
+
+def _hc_bin() -> str:
+    return os.environ.get("HTASK_HC") or shutil.which("hc") or str(Path.home() / ".local" / "bin" / "hc")
+
+
+def codex_terminal(project: str) -> str | None:
+    """The Herdr app terminal a Codex hook belongs to, or None when it can't be told for sure.
+
+    Codex can run hooks from its shared background app-server rather than the agent's terminal,
+    so HC_TERMINAL_ID may be missing. Look for a live Codex terminal whose current folder is in
+    this repo; with several, the one that's working. Better no terminal than the wrong one.
+    """
+    def hc(*args):
+        out = subprocess.run([_hc_bin(), *args, "--json"], capture_output=True, text=True, timeout=3)
+        return json.loads(out.stdout or "{}")
+
+    try:
+        found = []
+        for t in hc("ls").get("terminals", []):
+            if "/" in t.get("address", "") or t.get("state") != "live" or t.get("agent") != "codex":
+                continue
+            info = hc("get", t["address"])
+            cwd = (info.get("foreground") or {}).get("cwd") or info.get("cwd") or ""
+            if cwd and project_root(cwd) == project:
+                found.append(info)
+        if len(found) > 1:
+            found = [t for t in found if (t.get("status") or {}).get("state") == "working"]
+        return found[0]["address"] if len(found) == 1 else None
+    except (OSError, ValueError, subprocess.TimeoutExpired, KeyError):
+        return None
+
+
+CODEX_STATUS = {"pending": "todo", "in_progress": "doing", "completed": "done"}
+
+
+def sync_codex(event: dict, conn: sqlite3.Connection) -> int:
+    """Mirror one Codex PostToolUse(update_plan) event: the whole plan, keyed by step text."""
+    if event.get("tool_name") != "update_plan":
+        return 0
+    inp = event.get("tool_input") or {}
+    if isinstance(inp, str):  # Codex may send tool_input as a JSON string
+        try:
+            inp = json.loads(inp)
+        except ValueError:
+            return 0
+    steps = [(s["step"].strip(), CODEX_STATUS.get(s.get("status"), "todo"))
+             for s in inp.get("plan") or [] if isinstance(s, dict) and (s.get("step") or "").strip()]
+    if not steps:
+        return 0
+    session, now = event.get("session_id") or "unknown", time.time()
+    project = project_root(event.get("cwd") or os.getcwd())
+    upsert = _mirror(conn, project, "codex", origin_id() or codex_terminal(project), now)
+    return _sync_full_list(conn, upsert, f"codex:{session}:step:", steps, now)
 
 
 STATUS_WORDS = {"done": "done", "dropped": "dropped", "todo": "back to to-do", "doing": "in progress",
@@ -769,7 +904,7 @@ def cmd_hook(args) -> None:
         event = json.load(sys.stdin)
         conn = connect()
         with writing(conn, project_root(event.get("cwd") or os.getcwd())):
-            sync_claude(event, conn)
+            (sync_codex if args.agent == "codex" else sync_claude)(event, conn)
     except Exception as e:  # noqa: BLE001 - a broken hook must not block the agent
         print(f"htask hook: {e}", file=sys.stderr)
 
@@ -1052,8 +1187,8 @@ def main(argv=None) -> None:
     sm.set_defaults(fn=cmd_summary)
 
     hk = sub.add_parser("hook", help="agent hook: mirror the agent's own task list (reads stdin)")
-    hk.add_argument("agent", choices=["claude", "claude-inbox"],
-                    help="claude: mirror its task tool; claude-inbox: tell it what the human changed")
+    hk.add_argument("agent", choices=["claude", "claude-inbox", "codex"],
+                    help="claude / codex: mirror its task list or plan; claude-inbox: tell it what the human changed")
     hk.set_defaults(fn=cmd_hook)
 
     sub.add_parser("panel", help="run the TUI panel").set_defaults(fn=run_panel)

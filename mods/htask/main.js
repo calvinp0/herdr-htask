@@ -191,7 +191,11 @@ class Panel {
       return;
     }
     cx.spawn(async () => {
-      const text = `[Herdr task panel] The human changed your task: ${what} Keep htask in sync with this.`;
+      // A task mirrored from Codex's plan comes back on its next update_plan unless the plan changes.
+      const after = (task.external_id ?? "").startsWith("codex:")
+        ? "Update your plan (update_plan) to match, so your next update doesn't undo it."
+        : "Keep htask in sync with this.";
+      const text = `[Herdr task panel] The human changed your task: ${what} ${after}`;
       const r = await hc(["send", own.addr, text]).catch((e) => ({ code: 1, stderr: String(e?.message ?? e) }));
       if (r.code === 0) notify({ title: `Told ${own.addr}`, body: what, level: "info", action: there });
       else notify({
@@ -285,7 +289,7 @@ class Panel {
     const row = (key, a) => {
       const state = !a.available ? "not installed" : a.connected ? "connected" : a.partial ? "partly connected" : "not connected";
       const color = a.connected ? t.done : a.partial ? t.blocked : t.dim;
-      const what = key === "claude" ? "hooks + instructions" : "instructions";
+      const what = a.hooks ? "hooks + instructions" : "instructions";
       return h_flex().id(`agent-${key}`).gap(8).items_center().py(3)
         .child(div().w(90).flex_none().child(a.name))
         .child(div().flex_1().min_w(0).text_size(11).text_color(color).truncate().tooltip(`${what}: ${a.file}`).child(state))
@@ -301,7 +305,9 @@ class Panel {
       .when(Boolean(c?.error), (e) => e.child(div().text_size(11).text_color(t.blocked).child(c.error)))
       .when(Boolean(c?.agents), (e) => e.children(Object.entries(c.agents).map(([key, a]) => row(key, a))))
       .child(div().pt(4).text_size(10.5).text_color(t.dim)
-        .child("Agents started afterwards pick it up. Claude gets hooks and instructions; Codex and Pi get instructions."));
+        .child("Agents started afterwards pick it up. Claude Code and Codex get hooks and instructions (Codex asks you to approve its hook once); Pi gets instructions."))
+      .when(c?.agents?.codex?.available && c.agents.codex.hooks_enabled === false, (e) => e.child(div().pt(2).text_size(10.5)
+        .text_color(t.blocked).child("Codex hooks are off: add [features] hooks = true to ~/.codex/config.toml.")));
   }
 
   // ▸ Run…: start an agent on a to-do. Nothing is routed implicitly: every choice names where the

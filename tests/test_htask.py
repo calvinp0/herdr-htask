@@ -20,7 +20,7 @@ class Base(unittest.TestCase):
         self.env = {**os.environ, "HTASK_DB": str(root / "t.db"), "HERDR_PANE_ID": "w1:p1"}
         # Never report to a real Herdr TUI the tests happen to run in.
         for key in ("HTASK_PROJECT", "HERDR_ENV", "HERDR_WORKSPACE_ID", "HERDR_BIN_PATH", "HC_TERMINAL_ID",
-                    "HTASK_AGENT", "CLAUDECODE"):
+                    "HTASK_AGENT", "CLAUDECODE", "HTASK_HC", "CODEX_HOME"):
             self.env.pop(key, None)
 
     def tearDown(self):
@@ -485,6 +485,111 @@ class Connect(Base):
         self.assertIn("<!-- htask:start -->", text)
         self.assertIn("[Herdr task panel]", text)
         self.assertTrue(self.status()["codex"]["connected"])
+
+
+class CodexHook(Base):
+    def hook(self, plan, session="c1", as_string=False):
+        inp = {"plan": plan, "explanation": "why"}
+        event = {"session_id": session, "cwd": str(self.repo_a / "sub"), "hook_event_name": "PostToolUse",
+                 "tool_name": "update_plan", "tool_input": json.dumps(inp) if as_string else inp}
+        out = subprocess.run([sys.executable, str(HTASK), "hook", "codex"], input=json.dumps(event),
+                             env=self.env, capture_output=True, text=True)
+        self.assertEqual(out.returncode, 0, out.stderr)
+
+    def state(self):
+        return [(t["title"], t["status"], t["agent"]) for t in self.tasks()]
+
+    def test_plan_is_mirrored_and_revised(self):
+        self.hook([{"step": "Read the parser", "status": "completed"},
+                   {"step": "Add 6.1 support", "status": "in_progress"},
+                   {"step": "Write tests", "status": "pending"}])
+        self.assertEqual(self.state(), [("Read the parser", "done", "codex"), ("Add 6.1 support", "doing", "codex"),
+                                        ("Write tests", "todo", "codex")])
+        # Revised plan: "Write tests" became two steps; the left-out one is dropped, done stays done.
+        self.hook([{"step": "Read the parser", "status": "completed"},
+                   {"step": "Add 6.1 support", "status": "completed"},
+                   {"step": "Unit tests", "status": "pending"}, {"step": "Fixture files", "status": "pending"}],
+                  as_string=True)
+        self.assertEqual(self.state(), [("Read the parser", "done", "codex"), ("Add 6.1 support", "done", "codex"),
+                                        ("Write tests", "dropped", "codex"), ("Unit tests", "todo", "codex"),
+                                        ("Fixture files", "todo", "codex")])
+
+    def test_other_tools_and_sessions_are_left_alone(self):
+        self.hook([{"step": "A", "status": "pending"}], session="c1")
+        self.hook([{"step": "B", "status": "pending"}], session="c2")  # c2's plan doesn't drop c1's steps
+        self.assertEqual([(t, st) for t, st, _ in self.state()], [("A", "todo"), ("B", "todo")])
+
+    def fake_hc(self, terminals):
+        """A fake `hc` answering ls and get from a dict of address -> (agent, cwd, state)."""
+        script = Path(self.tmp.name) / "hc"
+        data = json.dumps(terminals)
+        script.write_text(f"""#!{sys.executable}
+import json, sys
+t = json.loads({data!r})
+if sys.argv[1] == "ls":
+    print(json.dumps({{"terminals": [{{"address": a, "agent": v[0], "state": "live"}} for a, v in t.items()]}}))
+else:
+    a = sys.argv[2]
+    print(json.dumps({{"address": a, "foreground": {{"cwd": t[a][1]}}, "status": {{"state": t[a][2]}}}}))
+""")
+        script.chmod(0o755)
+        self.env["HTASK_HC"] = str(script)
+        self.env.pop("HERDR_PANE_ID", None)
+
+    def test_terminal_found_from_herdr_core_when_the_hook_has_none(self):
+        self.fake_hc({"t3": ["codex", str(self.repo_a / "sub"), "working"],
+                      "t4": ["codex", str(self.repo_b), "working"], "t5": ["claude-code", str(self.repo_a), "idle"]})
+        self.hook([{"step": "A", "status": "pending"}])
+        self.assertEqual(self.tasks()[0]["pane_id"], "t3")
+
+    def test_ambiguous_terminal_is_left_empty(self):
+        self.fake_hc({"t3": ["codex", str(self.repo_a), "working"], "t4": ["codex", str(self.repo_a), "working"]})
+        self.hook([{"step": "A", "status": "pending"}])
+        self.assertIsNone(self.tasks()[0]["pane_id"])
+
+
+class ConnectCodex(Base):
+    def setUp(self):
+        super().setUp()
+        self.home = Path(self.tmp.name) / "home"
+        (self.home / ".codex").mkdir(parents=True)
+        self.env["HOME"] = str(self.home)
+        self.env.pop("CODEX_HOME", None)
+        self.hooks = self.home / ".codex" / "hooks.json"
+
+    def test_adds_update_plan_hook_beside_existing_ones(self):
+        self.hooks.write_text(json.dumps({"hooks": {"Stop": [{"hooks": [{"type": "command", "command": "herdr-state idle"}]}]}}))
+        (self.home / ".codex" / "config.toml").write_text("[features]\nhooks = true\n")
+        out = self.run_htask("connect", "codex").stdout
+        self.assertIn("approve a new hook", out)
+        data = json.loads(self.hooks.read_text())["hooks"]
+        self.assertEqual(data["Stop"][0]["hooks"][0]["command"], "herdr-state idle")
+        self.assertEqual(data["PostToolUse"][0]["matcher"], "^update_plan$")
+        self.assertTrue(data["PostToolUse"][0]["hooks"][0]["command"].endswith("htask hook codex"))
+        status = json.loads(self.run_htask("connect", "status", "--json").stdout)["codex"]
+        self.assertTrue(status["connected"] and status["hooks_enabled"], status)
+        self.run_htask("connect", "codex", "--remove")
+        self.assertEqual(list(json.loads(self.hooks.read_text())["hooks"]), ["Stop"])
+
+    def test_remove_with_no_htask_hooks_leaves_the_file_alone(self):
+        original = '{"hooks":{"Stop":[{"hooks":[{"command":"x","type":"command"}]}]}}'  # not htask's formatting
+        self.hooks.write_text(original)
+        out = self.run_htask("connect", "codex", "--remove").stdout
+        self.assertEqual(self.hooks.read_text(), original)
+        self.assertNotIn("hooks.json", out)
+
+    def test_warns_when_codex_hooks_are_off(self):
+        out = self.run_htask("connect", "codex").stdout
+        self.assertIn("[features] hooks = true", out)
+
+    def test_marked_section_is_brought_up_to_date(self):
+        agents_md = self.home / ".codex" / "AGENTS.md"
+        agents_md.write_text("# Mine\n\n<!-- htask:start -->\n## Task tracking (htask)\n\nold text\n<!-- htask:end -->\n")
+        self.run_htask("connect", "codex")
+        text = agents_md.read_text()
+        self.assertTrue(text.startswith("# Mine\n\n<!-- htask:start -->\n## Task tracking (htask)"))
+        self.assertIn("update_plan", text)
+        self.assertNotIn("old text", text)
 
 
 if __name__ == "__main__":

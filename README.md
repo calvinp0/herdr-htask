@@ -22,8 +22,8 @@ It works with both Herdr front ends:
 
 ## How it works
 
-- **Agents write tasks** with `htask add`, `start`, `done`, `note` and `block`, or, for Claude Code,
-  a hook copies Claude's own task list automatically. Tasks belong to the git repo the command
+- **Agents write tasks** with `htask add`, `start`, `done`, `note` and `block`, or, for Claude Code
+  and Codex, a hook copies the agent's own task list or plan automatically. Tasks belong to the git repo the command
   ran in.
 - **One database** at `~/.local/share/herdr-tasks/tasks.db` (WAL mode, so several agents can write
   while the panel reads). After every write htask rewrites `signal/changed` next to it, and the
@@ -51,8 +51,9 @@ mod into `~/.config/herdr-app/mods/htask` (if you have the app), links the termi
 (if you have `herdr`), and finishes with `htask doctor`.
 
 `htask connect all` sets up every agent it finds: for Claude Code, the hooks in
-`~/.claude/settings.json` and the instructions in `~/.claude/CLAUDE.md`; for Codex and Pi, the
-instructions in their `AGENTS.md`. It backs up each file before changing it, never rewrites a file
+`~/.claude/settings.json` and the instructions in `~/.claude/CLAUDE.md`; for Codex, the `update_plan`
+hook in `~/.codex/hooks.json` and the instructions in `~/.codex/AGENTS.md`; for Pi, the instructions
+in `~/.pi/agent/AGENTS.md`. It backs up each file before changing it, never rewrites a file
 that's already right, and `htask connect <agent> --remove` takes out exactly what it added.
 `htask connect status` shows where each agent stands. Agents started afterwards pick it up.
 Then set up the panel below.
@@ -175,6 +176,27 @@ go through the links `install.sh` makes, so they keep working if you move the ch
 
 Both always exit 0, so a broken hook can never block a tool call.
 
+## Codex hook
+
+`htask connect codex` adds this to `~/.codex/hooks.json` (Codex needs `[features] hooks = true` in
+its `config.toml`, and asks you to approve a new hook the next time it starts):
+
+```json
+"hooks": {
+  "PostToolUse": [
+    { "matcher": "^update_plan$",
+      "hooks": [ { "type": "command", "command": "~/.local/bin/htask hook codex", "timeout": 10 } ] }
+  ]
+}
+```
+
+Each `update_plan` resends the whole plan, so htask mirrors it by step text: new steps are added,
+statuses follow, and a step a revised plan leaves out is dropped (unless it was done). Codex may run
+hooks from its background app-server rather than the agent's terminal; then htask asks herdr-core
+for the live Codex terminal working in that repo, and leaves the terminal empty if there are several.
+When you change a Codex task in the panel, the message typed to Codex asks it to update its plan to
+match, so its next `update_plan` doesn't undo your change.
+
 ## Agent instructions
 
 `htask connect` adds these, between `<!-- htask:start -->` and `<!-- htask:end -->` markers. By hand:
@@ -205,8 +227,27 @@ Either way, use the `htask` CLI for (ids come from `htask list`):
 If a session does both, the hook doesn't add a duplicate: a task from Claude's tool is linked to
 an unlinked `htask add` task with the same title, from the same terminal, in the same repo.
 
-**Codex, Pi and other agents** (`~/.codex/AGENTS.md`, `~/.pi/agent/AGENTS.md`, or a project's
-`AGENTS.md`):
+**Codex** (`~/.codex/AGENTS.md`, with the hook above):
+
+```markdown
+## Task tracking (htask)
+
+The Herdr task panel shows your plan. For any task with more than one step:
+
+- **Plan with your `update_plan` tool** as usual (short step names) and keep the statuses current.
+  A hook copies the plan into the panel. Don't also `htask add` those steps.
+- **If `update_plan` isn't available:** use the `htask` CLI itself: `htask add "<short title>" -d
+  "<what done looks like>"` for each step, `htask start <id>` before working on one, `htask done
+  <id>` after verifying it.
+
+Either way, use the `htask` CLI for (ids come from `htask list`):
+- `htask list` at the start, to pick up open tasks earlier sessions left in this repo.
+- `htask note <id> "<progress, findings, next step>"` to leave information for the human.
+- `htask block <id> -m "<what you need>"` when you are waiting on the user or something external. This notifies the human.
+- A message starting with `[Herdr task panel]` means the human changed one of your tasks: follow it, and update your plan to match so your next update doesn't undo it.
+```
+
+**Pi and other agents** (`~/.pi/agent/AGENTS.md`, or a project's `AGENTS.md`):
 
 ```markdown
 ## Task tracking (htask)

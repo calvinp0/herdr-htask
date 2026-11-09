@@ -59,7 +59,7 @@ the agent that owns the task.
   message names the task and asks the agent to run `htask start <id>` (which claims the task for
   the agent's terminal), `htask done`, or `htask block`. Nothing is sent to an agent not chosen.
 - **Agents** in the header opens a "CONNECT AGENTS" box under the chips: one row per agent (Claude
-  Code, Codex, Pi) with its state (`connected` in `done`, `partly connected` in `blocked`, `not
+  Code, Codex, Pi; Claude and Codex get hooks, Pi only instructions) with its state (`connected` in `done`, `partly connected` in `blocked`, `not
   connected` / `not installed` in `dim`) and a Connect / Finish / Disconnect button that runs
   `htask connect <agent> [--remove]` where the space runs; a toast reports what changed, with the
   backup names. The empty state offers "New here? Connect your agents…".
