@@ -9,17 +9,6 @@ the agent that owns the task.
 
 ![htask](preview.png)
 
-**Before adding it, know that the mod:**
-- **runs programs:** `~/.local/bin/htask` (and `htask` on an SSH machine, for remote spaces), and
-  `hc send` to type a message into an agent's terminal when you change its task;
-- **reads files outside its folder:** the task database in `~/.local/share/herdr-tasks/` (through
-  `htask`) and its `signal/` folder, which it watches;
-- **needs the `htask` CLI installed first:** clone the repo and run `./install.sh` (Python 3.10+,
-  standard library only). Without it the chip shows a red `htask ✗`.
-- reaches no network.
-- On Windows the htask CLI doesn't run: the mod uses htask on the machines the app connects to over
-  SSH, and for the PC's own spaces shows a plain "Tasks" chip (no red error).
-
 ## What you see
 
 - **Panel** (a block, usually a child of the right-hand panel stack next to Files and Changes):
@@ -41,7 +30,9 @@ the agent that owns the task.
     spinner in `working`, spinning; blocked: filled dot in `blocked`; done: a check in `done`),
     the title (truncated until opened), `#id` in `dim` on the right. A note shows under the title as
     `↳ note`, red for blocked tasks. In-progress and blocked tasks made in another terminal show that
-    agent's live state (`t6 working`, `t2 idle`, red `agent exited` / `terminal closed`). The accent
+    agent's live state as `<terminal> <status>`: `working` (and `running`, for an agent that reports
+    no status) in `working`; `blocked` in `blocked`; `idle` and `done` in `dim`; `agent exited` (the
+    terminal is a shell again) and `terminal closed` in `blocked`. The accent
     `this terminal` tag appears only when the repo's open tasks come from more than one terminal.
   - An add box at the bottom: a bordered input ("Add a task, then Enter") and an **Add** button.
 - **Chip** (a status-bar block, `props.view = "chip"`): the htask icon, `done/total` for the focused
@@ -104,8 +95,10 @@ the agent that owns the task.
   hears about it from its inbox hook at its next step (a toast says so); any other agent gets a
   `[Herdr task panel] ...` message typed into its terminal with `hc send`, which refuses while the
   agent waits on a question (a toast then offers to take you there).
-- Chips toggle sections and are remembered per panel, as is Done's expanded state. Keys can send
-  `htask.toggle-todo`, `htask.toggle-done`, `htask.toggle-dropped`, `htask.toggle-archived`.
+- Chips toggle sections and are remembered per panel, as is Done's expanded state.
+- Key commands (none bound by default; the person binds them in `keys.json`): `htask.toggle-todo`,
+  `htask.toggle-done`, `htask.toggle-dropped`, `htask.toggle-archived`, `htask.toggle-all` (this
+  repo / All), `htask.dock`, `htask.agents`, `htask.timeline`, `htask.check-update`, `htask.update`.
 - The chip toggles the panel: it finds the panel block anywhere in the layout, selects it in its stack
   and shows hidden ancestors, or hides the outermost container that holds only the panel. With no
   panel block in the layout, it opens the panel as a floating window (`key: "htask"`).
@@ -120,13 +113,22 @@ the agent that owns the task.
 - `mods/htask/main.js`: the default export picks a view from `props().view`: the panel (`Panel`) or
   the chip (`chip.js`). `sections()` holds the ordering policy.
 - `mods/htask/common.js`: running htask here or on a machine (`exec`, with `on`), the focused
-  location (`focused()`, `panes()`, `spaces()`), finding and toggling the panel in `layout()`, and
-  watching the signal folder (`watchFolder`).
+  location (`focused()`, `panes()`, `spaces()`), finding and toggling the panel in `layout()`,
+  watching the signal folder (`watchFolder`), `MOD_VERSION` for the version banner, and
+  `window().platform` to tell a Windows panel's own spaces apart.
+- `mods/htask/layout-edit.js`: pure functions on a layout tree, no herdr calls: `addToLayout(root)`
+  (panel into the stack holding Files/Changes, chip into the status row) and `spotIn(root)`.
 - `mods/htask/chip.js`: status-bar view, `notify()`, `shared()` / `setShared()`.
-- Herdr functions: `focused`, `panes`, `spaces`, `agents`, `terminals`, `layout`, `theme`, `run`
-  (`layout.select`, `layout.show`, `layout.hide`, `agent.focus`), `exec`, `hc`, `watchFolder`,
-  `notify`, `openOverlay`, `closeOverlay`, `shared`, `setShared`, `nextCommand`, `home`.
-- Data: `htask --project <dir> list --all --json`, `list --archived --json`, and `summary` (JSON).
+- Herdr functions: `props`, `focused`, `panes`, `spaces`, `agents`, `terminals`, `knownAgents`,
+  `layout`, `layouts`, `theme`, `settings` (`font_family` for the number badge, `zoom`), `window`,
+  `run` (`layout.select`, `layout.show`, `layout.hide`, `layout.clone`, `layout.set`, `pane.close`,
+  `tab.new`, `agent.focus`), `exec`, `hc` (`send`), `watchFolder`, `notify`, `openOverlay`,
+  `closeOverlay`, `shared`, `setShared`, `nextCommand`, `home`.
+- Data (all JSON): `htask --project <dir> list --all --json` (plus `--everywhere` in All),
+  `list --archived --json`, `timeline --json --limit 80`, `summary`, `connect status --json`,
+  `--version`. Changes: `htask --project <dir> --by you <start|done [--force]|block -m|reopen|drop|
+  archive|add>`, `clean --days 0` (the header's Archive), `connect <agent> [--remove]`,
+  `update [--check]`.
 - Art: `htask.svg` (checklist icon, tinted), `check.svg` (done mark), and the shipped
   `mods/workspace-chrome/spinner.svg`.
 - Layout blocks: `{ "id": "htask", "type": "block", "content": { "mod": "htask" } }` for the panel,
@@ -135,6 +137,15 @@ the agent that owns the task.
 
 ## Watch out
 
+- What the mod does outside its folder (tell the person before adding it): it **runs programs**,
+  `~/.local/bin/htask` (and `htask` on SSH machines, for remote spaces) and `hc send` to type into an
+  agent's terminal when you change its task; it **reads files outside its folder**, the task database
+  in `~/.local/share/herdr-tasks/` (through `htask`) and its `signal/` folder, which it watches. It
+  makes no network requests itself, but **Update** runs `htask update`, which does a `git pull`.
+- It needs the `htask` CLI first: clone the repo and run `./install.sh` (Python 3.10+, standard
+  library only). This recipe builds the mod, not the CLI. Without htask the chip shows a red `htask ✗`.
+- On Windows the CLI doesn't run: the mod uses htask on the machines the app reaches over SSH, and
+  for the PC's own spaces shows a plain "Tasks" chip (no red error) and no update row in the Agents box.
 - A mod copy starts only once it's shown, so blocked-task toasts and the badge come from the chip:
   keep the chip in the layout. A panel that was never opened does nothing.
 - Never watch the database folder: SQLite creates and deletes `-wal`/`-shm` files on every
@@ -144,7 +155,7 @@ the agent that owns the task.
   htask. Sub-agents inside an agent's process (Claude Code's, Pi's) share it; only terminals started
   with `hc run` get their own. After a herdr-core restart, addresses are reused for new shells.
 - Remote spaces need `htask` on that machine (`~/.local/bin/htask` or on its PATH); each machine has
-  its own database. Untested against a real SSH machine.
+  its own database. Tested from a Windows app on a Linux machine.
 - The panel is a copy of the repo's `mods/htask`: rerun `./install.sh` after `git pull`.
 
 ## Done when
