@@ -54,8 +54,15 @@ and publishes `shared("htask.summary")` = `{project, done, total, blocked}`, whi
 Tasks button shows as `2/5` plus a red dot. The chip has to be in the layout for toasts and the
 badge to work: the panel only starts once it has been opened.
 
-Clicking **Tasks** in the tab bar opens and closes the panel. Click a task for its description,
-agent and last update. `htask` rewrites `~/.local/share/herdr-tasks/signal/changed` after every
+Clicking **Tasks** in the tab bar opens and closes the panel. In the panel:
+
+- click a task for its description, agent, last update and buttons (Start, Done, Unblock, Drop, Reopen);
+- click a task's status dot to mark it done, or to reopen it;
+- type in the box at the bottom and press Enter to add a task (recorded with agent `you`), so you
+  can queue work for the next agent;
+- tasks in progress or blocked show their agent's live state, for example `t6 working`. Click it to
+  jump to that terminal. When the agent has exited or its terminal closed, the task says nobody is
+  working on it. `htask` rewrites `~/.local/share/herdr-tasks/signal/changed` after every
 change, and the panel watches that folder. It can't watch the DB folder itself, because SQLite
 creates and deletes its `-wal`/`-shm` files on every read.
 

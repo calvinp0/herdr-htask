@@ -2,8 +2,8 @@
 // Two views: the panel (default; the right-hand stack) and props.view "chip" (status bar, chip.js).
 // Both read htask (one SQLite DB for every agent) and redraw when it writes or focus changes repo.
 import { View, div, svg } from "gpui-kit";
-import { v_flex, h_flex, Scrollbar } from "gpui-base";
-import { exec, theme, props } from "herdr";
+import { v_flex, h_flex, Scrollbar, InputState, Input } from "gpui-base";
+import { exec, theme, props, run, agents, terminals } from "herdr";
 import { HTASK, location, watchSignal } from "./common.js";
 import { Chip } from "./chip.js";
 
@@ -24,6 +24,32 @@ export function sections(tasks, terminal, showDone) {
   return out;
 }
 
+// The agent that made a task, live: { addr, state } where state is its agent status
+// (working, blocked, done, idle), "running" (an agent that doesn't report one), "exited" (the
+// terminal is a plain shell again) or "gone" (the terminal closed). null when the task wasn't
+// made in a Herdr app terminal (by hand, or in the TUI).
+const SHELLS = new Set(["bash", "zsh", "fish", "sh", "dash", "ksh", "nu", "pwsh", "powershell"]);
+function owner(task) {
+  const addr = task.pane_id;
+  if (!/^([\w.-]+\/)?t\d+$/.test(addr ?? "")) return null;
+  const term = terminals().find((x) => x.address === addr);
+  if (!term || term.state !== "live") return { addr, state: "gone" };
+  const agent = agents().find((a) => a.address === addr);
+  if (agent) return { addr, state: agent.status };
+  return { addr, state: term.agent && !SHELLS.has(term.agent) ? "running" : "exited" };
+}
+const OWNER_COLOR = { working: "working", blocked: "blocked", running: "working", done: "dim", idle: "dim", exited: "blocked", gone: "blocked" };
+const OWNER_WORD = { exited: "agent exited", gone: "terminal closed" };
+
+// The buttons an expanded task offers, by status: [label, htask command].
+const ACTIONS = {
+  todo: [["Start", "start"], ["Done", "done"], ["Drop", "drop"]],
+  doing: [["Done", "done"], ["Back to to-do", "reopen"], ["Drop", "drop"]],
+  blocked: [["Unblock", "reopen"], ["Done", "done"], ["Drop", "drop"]],
+  done: [["Reopen", "reopen"]],
+  dropped: [["Reopen", "reopen"]],
+};
+
 function ago(seconds) {
   const s = Math.max(0, Date.now() / 1000 - seconds);
   if (s < 60) return "just now";
@@ -36,6 +62,10 @@ class Panel {
   init(_props, cx) {
     this.tasks = []; this.project = null; this.cwd = null; this.terminal = null;
     this.open = new Set(); this.showDone = true; this.width = 0;
+    this.input = InputState.new({ placeholder: "Add a task, then Enter" });
+    this.input.on("submit", (_e, cx) => this.add(cx));
+    this.input.on("focus", (_e, cx) => { this.typing = true; cx.notify(); });
+    this.input.on("blur", (_e, cx) => { this.typing = false; cx.notify(); });
     watchSignal(cx, (cx) => this.refresh(cx));
     // Backstop for writes that bypass htask (sqlite3 by hand) or a watch that failed.
     cx.timer.every(15000, (cx) => this.refresh(cx));
@@ -63,6 +93,29 @@ class Panel {
     });
   }
 
+  // Run an htask command on this project. The signal watch reloads the list afterwards.
+  htask(args, cx) {
+    const project = this.project;
+    if (!project) return;
+    this.note = null;
+    cx.spawn(async (cx) => {
+      try {
+        const r = await exec(HTASK(), ["--project", project, ...args], { timeout: 10000 });
+        if (r.code !== 0) throw new Error((r.stderr || r.stdout).trim());
+      } catch (e) {
+        this.note = String(e?.message ?? e);
+      }
+      cx.notify();
+    });
+  }
+
+  add(cx) {
+    const title = this.input.value().trim();
+    if (!title) return;
+    this.input.set_value("");
+    this.htask(["add", "--agent", "you", "--", title], cx);
+  }
+
   toggle(id, cx) {
     if (this.open.has(id)) this.open.delete(id); else this.open.add(id);
     cx.notify();
@@ -77,12 +130,36 @@ class Panel {
         : task.status === "done"
           ? svg("mods/htask/check.svg").size(12).text_color(color)
           : div().size(9).rounded(5).bg(color);
-    return h_flex().w(14).h(19).flex_none().items_center().justify_center().child(mark);
+    const next = task.status === "done" || task.status === "dropped" ? "reopen" : "done";
+    return h_flex().id(`dot-${task.id}`).w(14).h(19).flex_none().items_center().justify_center().rounded(4)
+      .hover((s) => s.bg(t.raised)).tooltip(next === "done" ? "Mark done" : "Reopen")
+      .on_click((_e, cx) => { cx.stop_propagation(); this.htask([next, String(task.id)], cx); })
+      .child(mark);
+  }
+
+  ownerTag(task, own, t) {
+    const color = t[OWNER_COLOR[own.state]] ?? t.dim, live = own.state !== "gone";
+    return div().id(`owner-${task.id}`).h(19).px(4).flex().flex_none().items_center().gap(4).rounded(4)
+      .text_size(10).text_color(color)
+      .when(live, (e) => e.cursor_pointer().hover((s) => s.bg(t.raised)).tooltip(`Show ${own.addr}`)
+        .on_click((_e, cx) => { cx.stop_propagation(); run("agent.focus", { terminal: own.addr }); }))
+      .child(`${own.addr} ${OWNER_WORD[own.state] ?? own.state}`);
+  }
+
+  actions(task, t) {
+    return h_flex().pl(22).pt(4).gap(5).children((ACTIONS[task.status] ?? []).map(([label, cmd]) =>
+      div().id(`act-${task.id}-${cmd}`).px(7).py(2).rounded(5).text_size(11).cursor_pointer()
+        .bg(t.raised).text_color(t.foreground).hover((s) => s.bg(t.hover))
+        .on_click((_e, cx) => { cx.stop_propagation(); this.htask([cmd, String(task.id)], cx); })
+        .child(label)));
   }
 
   row(task, t) {
     const open = this.open.has(task.id), done = task.status === "done";
     const mine = this.terminal && task.pane_id === this.terminal;
+    const active = task.status === "doing" || task.status === "blocked";
+    const own = active ? owner(task) : null;
+    const orphaned = own && (own.state === "exited" || own.state === "gone");
     const detail = (text, color) => div().pl(22).text_size(11.5).text_color(color).child(text);
     return v_flex().id(`task-${task.id}`).flex_none().px(8).py(5).gap(2).rounded(7).cursor_pointer()
       .when(open, (e) => e.bg(t.selected)).hover((s) => s.bg(t.hover))
@@ -91,11 +168,14 @@ class Panel {
         .child(this.dot(task, t))
         .child(div().flex_1().min_w(0).text_color(done ? t.muted : t.foreground).when(!open, (e) => e.truncate()).child(task.title))
         .when(mine, (e) => e.child(div().h(19).flex().items_center().text_size(10).text_color(t.accent).child("this terminal")))
+        .when(Boolean(own) && !mine, (e) => e.child(this.ownerTag(task, own, t)))
         .child(div().h(19).flex().items_center().text_size(10.5).text_color(t.dim).child(`#${task.id}`)))
       .when(Boolean(task.note) && !done, (e) => e.child(detail(`↳ ${task.note}`, task.status === "blocked" ? t.blocked : t.muted)))
+      .when(orphaned, (e) => e.child(detail("Nobody is working on this now. Pick it up or move it back to to-do.", t.blocked)))
       .when(open && Boolean(task.description), (e) => e.child(detail(task.description, t.muted)))
       .when(open, (e) => e.child(detail(
-        [task.agent, task.pane_id, `updated ${ago(task.updated_at)}`].filter(Boolean).join(" · "), t.dim)));
+        [task.agent, task.pane_id, `updated ${ago(task.updated_at)}`].filter(Boolean).join(" · "), t.dim)))
+      .when(open, (e) => e.child(this.actions(task, t)));
   }
 
   render(cx) {
@@ -115,7 +195,7 @@ class Panel {
       : this.error ? this.error
       : !this.cwd ? "Focus a terminal to see its repo's tasks."
       : this.loading && !this.project ? "Loading tasks…"
-      : `No tasks in ${name} yet. Agents add them with:`;
+      : `No tasks in ${name} yet. Add one below, or agents add them with:`;
 
     return v_flex().id("htask").size_full().min_h(0).rounded(10).overflow_hidden().bg(t.background)
       .border_1().border_color(t.border).text_color(t.foreground).text_size(13)
@@ -140,7 +220,15 @@ class Panel {
             .child(empty)
             .when(!this.remote && !this.error && Boolean(this.project), (e) => e.child(
               div().px(8).py(5).rounded(6).bg(t.raised).text_size(11.5).text_color(t.muted).child('htask add "title" -d "what done looks like"'))))))
-        .child(Scrollbar.vertical("htask-list").absolute().inset_0()));
+        .child(Scrollbar.vertical("htask-list").absolute().inset_0()))
+      .when(Boolean(this.note), (e) => e.child(div().px(14).pb(6).text_size(11).text_color(t.blocked).child(this.note)))
+      .when(Boolean(this.project) && !this.remote, (e) => e.child(h_flex().flex_none().p(10).gap(8).border_t(1).border_color(t.border)
+        .child(div().id("htask-add").flex_1().min_w(0).h(32).px(10).flex().items_center().rounded(8).border_1()
+          .border_color(this.typing ? t.accent : t.border).cursor_text().on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+          .child(Input.new(this.input).h_full().text_size(12).text_color(t.foreground)))
+        .child(div().id("htask-add-button").h(32).px(12).flex().items_center().rounded(8).text_size(12).cursor_pointer()
+          .bg(t.raised).text_color(t.foreground).hover((s) => s.bg(t.hover))
+          .on_click((_e, cx) => this.add(cx)).child("Add"))));
   }
 }
 

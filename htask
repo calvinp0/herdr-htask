@@ -159,7 +159,7 @@ def cmd_add(args) -> None:
             "INSERT INTO tasks (project, title, description, status, agent, pane_id,"
             " created_at, updated_at, completed_at) VALUES (?,?,?,?,?,?,?,?,?)",
             (project, args.title, args.description or "", args.status,
-             detect_agent(), origin_id(), now, now,
+             args.agent or detect_agent(), origin_id(), now, now,
              now if args.status == "done" else None),
         )
     print(f"#{cur.lastrowid} {args.title}")
@@ -497,6 +497,7 @@ def main(argv=None) -> None:
     a.add_argument("title")
     a.add_argument("-d", "--description")
     a.add_argument("--status", choices=STATUSES, default="todo")
+    a.add_argument("--agent", help="who added it (default: detected from the environment)")
     a.set_defaults(fn=cmd_add)
 
     for name, status, helptext in (

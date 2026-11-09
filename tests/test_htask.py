@@ -64,6 +64,12 @@ class HtaskCLI(Base):
         self.assertNotEqual(out.returncode, 0)
         self.assertIn("no task #42", out.stderr)
 
+    def test_add_from_panel(self):
+        # The panel adds with --agent you and "--", so a title starting with "-" still works.
+        self.run_htask("add", "--agent", "you", "--", "-fix the flag parser")
+        (t,) = self.tasks()
+        self.assertEqual((t["title"], t["agent"]), ("-fix the flag parser", "you"))
+
     def test_list_hides_done_by_default(self):
         self.run_htask("add", "open")
         self.run_htask("add", "closed", "--status", "done")
