@@ -6,11 +6,11 @@ what they're working on, what's blocked, and what's left. Agents record tasks wi
 repo's tasks, and updates as soon as any agent writes.
 
 <p align="center">
-  <img src="docs/panel.png" width="420" alt="The Tasks panel in the Herdr desktop app: a blocked task with its reason, a task in progress, two to-do tasks and the five most recent done tasks, with a Tasks 8/12 button and a red dot in the tab bar">
+  <img src="docs/panel.png" width="420" alt="The Tasks panel in the Herdr desktop app: To do, Done and Archived filter chips, a blocked task with its reason, a task in progress, two to-do tasks, the five most recent done tasks and three archived ones, with a Tasks 6/10 button and a red dot in the tab bar">
 </p>
 
 The panel showing this repo's own tasks. The status bar gets a chip with the same count and how
-many tasks are blocked across all repos: <img src="docs/chip.png" height="22" alt="Status-bar chip: 8/12, 5 blocked">
+many tasks are blocked across all repos: <img src="docs/chip.png" height="22" alt="Status-bar chip: 6/10, 5 blocked">
 
 (The middle of the panel, which was empty, is cut out of the screenshot.)
 
@@ -90,8 +90,15 @@ In the panel:
 - type in the box at the bottom and press Enter to add a task for the next agent;
 - in-progress and blocked tasks show their agent's live state (`t6 working`). Click it to jump to
   that terminal. If the agent has exited or its terminal has closed, the task says so;
-- **Done** shows the five most recent tasks; **Archive** puts away this repo's done tasks, and
-  the **Archived** toggle shows them again (newest first). Reopen one to bring it back.
+- the **To do**, **Done** and **Archived** chips show or hide those sections (Blocked and In
+  progress always show); the panel remembers them. Done shows the five most recent tasks;
+  Archived shows archived tasks newest first;
+- **Archive** in the header puts away all of this repo's done tasks; a done or dropped task's own
+  **Archive** button puts away just that one. Reopen an archived task to bring it back.
+
+The chips can be keys too: bind `htask.toggle-todo`, `htask.toggle-done` or
+`htask.toggle-archived` in `~/.config/herdr-app/keys.json`, for example
+`"global": { "ctrl-alt-t": "htask.toggle-todo" }`.
 
 Spaces on SSH machines run htask on that machine, against that machine's own database. Install
 it there once (`scp htask <machine>:~/.local/bin/htask`). Remote spaces refresh every 5 seconds.
@@ -108,8 +115,8 @@ command = "calvin.htask.open"
 description = "open task panel"
 ```
 
-Panel keys: `j`/`k` scroll, `d` show or hide done tasks, `a` show or hide archived tasks,
-`v` show or hide descriptions, `q` close.
+Panel keys: `j`/`k` scroll, `t` show or hide to-do tasks, `d` done tasks, `a` archived tasks,
+`v` descriptions, `q` close.
 
 For progress in the sidebar, add the `$tasks` token (done/total for the agent's repo, updated
 whenever an agent in that pane changes a task):
@@ -198,6 +205,7 @@ htask block <id> -m "what you need"
 htask note <id> "text"
 htask edit <id> [--title ...] [-d ...]
 htask list [--all] [--archived] [--json]
+htask archive <id>...                     # archive done/dropped tasks now
 htask clean [--days 7] [--everywhere] [--dry-run]   # archive old done/dropped tasks
 htask summary                             # JSON: counts here + blocked tasks everywhere
 htask panel                               # the terminal panel (curses)

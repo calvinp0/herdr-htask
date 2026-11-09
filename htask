@@ -294,6 +294,20 @@ def cmd_summary(args) -> None:
     print(json.dumps({"project": project, "counts": counts, "blocked": [dict(r) for r in blocked]}))
 
 
+def cmd_archive(args) -> None:
+    """Archive particular done or dropped tasks now. `htask reopen <id>` brings one back."""
+    conn, now = connect(), time.time()
+    project = _project_from_args(args)
+    for task_id in args.ids:
+        row = _get_task(conn, task_id, project)
+        if row["status"] not in ("done", "dropped"):
+            sys.exit(f"htask: #{task_id} is {row['status']}: only done or dropped tasks can be archived")
+        with writing(conn, project):
+            conn.execute("UPDATE tasks SET archived_at = ? WHERE id = ?", (now, task_id))
+            log_change(conn, args, task_id, "archive")
+        print(f"#{task_id} archived")
+
+
 def cmd_clean(args) -> None:
     """Archive done and dropped tasks finished more than --days ago. `htask list --archived` shows them."""
     conn, now = connect(), time.time()
@@ -580,7 +594,7 @@ DONE_SHOWN = 5  # done tasks shown; the rest are a "+N more" line (htask clean c
 
 
 def order_tasks(tasks: list[sqlite3.Row], focused_pane_id: str | None,
-                show_done: bool) -> list[tuple[str, list[sqlite3.Row], int]]:
+                show_done: bool, show_todo: bool = True) -> list[tuple[str, list[sqlite3.Row], int]]:
     """The panel's sections in display order, as (title, rows, hidden count).
 
     Same policy as the app panel's sections(): Blocked first because it needs
@@ -591,7 +605,9 @@ def order_tasks(tasks: list[sqlite3.Row], focused_pane_id: str | None,
     def by(status):
         rows = [t for t in tasks if t["status"] == status]
         return sorted(rows, key=lambda t: not (focused_pane_id and t["pane_id"] == focused_pane_id))
-    sections = [("BLOCKED", by("blocked"), 0), ("IN PROGRESS", by("doing"), 0), ("TO DO", by("todo"), 0)]
+    sections = [("BLOCKED", by("blocked"), 0), ("IN PROGRESS", by("doing"), 0)]
+    if show_todo:
+        sections.append(("TO DO", by("todo"), 0))
     if show_done:
         done = sorted((t for t in tasks if t["status"] == "done"),
                       key=lambda t: t["completed_at"] or 0, reverse=True)
@@ -622,7 +638,7 @@ def _panel(scr, args) -> None:
 
     conn = connect()
     ctx, last_poll, last_version = None, 0.0, None
-    show_done, show_desc, show_archived, scroll = True, True, False, 0
+    show_done, show_desc, show_archived, show_todo, scroll = True, True, False, True, 0
     lines: list[tuple[str, int]] = []
     dirty = True
 
@@ -644,7 +660,7 @@ def _panel(scr, args) -> None:
             tasks = fetch_tasks(conn, project)
             archived = sorted(fetch_tasks(conn, project, archived=True),
                               key=lambda t: t["archived_at"] or 0, reverse=True) if show_archived else None
-            lines = _render(tasks, project, ctx, w, show_done, show_desc, color, archived)
+            lines = _render(tasks, project, ctx, w, show_done, show_desc, color, archived, show_todo)
             dirty = False
         scroll = max(0, min(scroll, len(lines) - h))
         scr.erase()
@@ -666,13 +682,16 @@ def _panel(scr, args) -> None:
             show_done, dirty = not show_done, True
         elif key == ord("a"):
             show_archived, dirty = not show_archived, True
+        elif key == ord("t"):
+            show_todo, dirty = not show_todo, True
         elif key == ord("v"):
             show_desc, dirty = not show_desc, True
         elif key == curses.KEY_RESIZE:
             dirty = True
 
 
-def _render(tasks, project, ctx, width, show_done, show_desc, color, archived=None) -> list[tuple[str, int]]:
+def _render(tasks, project, ctx, width, show_done, show_desc, color, archived=None,
+            show_todo=True) -> list[tuple[str, int]]:
     import curses
     width = max(width - 1, 20)
     open_ = [t for t in tasks if t["status"] not in ("done", "dropped")]
@@ -687,7 +706,7 @@ def _render(tasks, project, ctx, width, show_done, show_desc, color, archived=No
         ("█" * filled + "░" * (bar_w - filled) + f" {len(done)}/{total}", color["done"]),
         ("", 0),
     ]
-    sections = order_tasks(tasks, ctx.get("pane_id"), show_done)
+    sections = order_tasks(tasks, ctx.get("pane_id"), show_done, show_todo)
     if not any(rows for _, rows, _ in sections):
         out.append(("No tasks yet.", curses.A_DIM))
         out.append(('Agents add them with: htask add "title" -d "..."', curses.A_DIM))
@@ -718,7 +737,7 @@ def _render(tasks, project, ctx, width, show_done, show_desc, color, archived=No
         for t in archived:
             out.append((f" {STATUS_GLYPH[t['status']]} #{t['id']} {t['title']}", curses.A_DIM))
         out.append(("", 0))
-    out.append(("q quit  j/k scroll  d done  a archived  v details", curses.A_DIM))
+    out.append(("q quit  j/k scroll  t to-do  d done  a archived  v details", curses.A_DIM))
     return out
 
 
@@ -765,6 +784,10 @@ def main(argv=None) -> None:
     ls.add_argument("--json", action="store_true")
     ls.add_argument("--archived", action="store_true", help="only tasks put away by `htask clean`")
     ls.set_defaults(fn=cmd_list)
+
+    ar = sub.add_parser("archive", help="archive done or dropped tasks now")
+    ar.add_argument("ids", type=int, nargs="+")
+    ar.set_defaults(fn=cmd_archive)
 
     cl = sub.add_parser("clean", help="archive done/dropped tasks older than --days")
     cl.add_argument("--days", type=float, default=7, help="age in days (default 7; 0 = all done)")

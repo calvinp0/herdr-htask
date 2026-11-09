@@ -3,7 +3,7 @@
 // Both read htask (one SQLite DB for every agent) and redraw when it writes or focus changes repo.
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, Scrollbar, InputState, Input } from "gpui-base";
-import { theme, props, run, agents, terminals, hc, notify } from "herdr";
+import { theme, props, run, agents, terminals, hc, notify, nextCommand } from "herdr";
 import { htask, htaskError, qualify, location, watchSignal } from "./common.js";
 import { Chip } from "./chip.js";
 
@@ -17,12 +17,13 @@ const DONE_SHOWN = 5;
 // Blocked comes first because it needs you. Within each open section, the focused terminal's
 // tasks come first, then the rest of the repo's in id order (sort is stable). Done shows the
 // newest few. Dropped tasks don't show (htask list --all and Archive still see them).
-export function sections(tasks, terminal, showDone, machine) {
+export function sections(tasks, terminal, show, machine) {
   const mine = (task) => Boolean(terminal) && qualify(machine, task.pane_id) === terminal;
   const by = (status) => tasks.filter((task) => task.status === status)
     .sort((a, b) => Number(mine(b)) - Number(mine(a)));
-  const out = [["Blocked", by("blocked"), 0], ["In progress", by("doing"), 0], ["To do", by("todo"), 0]];
-  if (showDone) {
+  const out = [["Blocked", by("blocked"), 0], ["In progress", by("doing"), 0]];
+  if (show.todo) out.push(["To do", by("todo"), 0]);
+  if (show.done) {
     const done = tasks.filter((task) => task.status === "done")
       .sort((a, b) => (b.completed_at ?? 0) - (a.completed_at ?? 0));
     out.push(["Done", done.slice(0, DONE_SHOWN), Math.max(0, done.length - DONE_SHOWN)]);
@@ -52,8 +53,8 @@ const ACTIONS = {
   todo: [["Start", "start"], ["Done", "done"], ["Drop", "drop"]],
   doing: [["Done", "done"], ["Back to to-do", "reopen"], ["Drop", "drop"]],
   blocked: [["Unblock", "reopen"], ["Done", "done"], ["Drop", "drop"]],
-  done: [["Reopen", "reopen"]],
-  dropped: [["Reopen", "reopen"]],
+  done: [["Reopen", "reopen"], ["Archive", "archive"]],
+  dropped: [["Reopen", "reopen"], ["Archive", "archive"]],
 };
 
 // What the owning agent is told when you change its task from the panel.
@@ -72,12 +73,29 @@ function ago(seconds) {
   return `${Math.floor(s / 86400)}d ago`;
 }
 
+// The filter chips under the progress bar, in order. Blocked and In progress always show.
+const FILTERS = [["todo", "To do"], ["done", "Done"], ["archived", "Archived"]];
+const DEFAULT_SHOW = { todo: true, done: true, archived: false };
+
+function loadShow() {
+  try { return { ...DEFAULT_SHOW, ...JSON.parse(localStorage.getItem("show") ?? "{}") }; }
+  catch { return { ...DEFAULT_SHOW }; }
+}
+
 class Panel {
   init(_props, cx) {
     this.tasks = []; this.project = null; this.cwd = null; this.terminal = null;
-    this.open = new Set(); this.showDone = true; this.width = 0;
-    // The Archived toggle: off by default, and only then are archived tasks fetched.
-    this.showArchived = false; this.archived = [];
+    this.open = new Set(); this.width = 0;
+    // Which sections show; remembered per panel copy. Archived tasks are only fetched while shown.
+    this.show = loadShow(); this.archived = [];
+    // Key commands for this mod, e.g. keys.json "mod:htask" or "global": "htask.toggle-done".
+    cx.spawn(async (cx) => {
+      for (;;) {
+        const c = await nextCommand();
+        const name = /^toggle-(todo|done|archived)$/.exec(c)?.[1];
+        if (name) this.flip(name, cx);
+      }
+    });
     this.input = InputState.new({ placeholder: "Add a task, then Enter" });
     this.input.on("submit", (_e, cx) => this.add(cx));
     this.input.on("focus", (_e, cx) => { this.typing = true; cx.notify(); });
@@ -101,7 +119,7 @@ class Panel {
         if (r.code !== 0) throw new Error(htaskError(machine, r));
         const data = JSON.parse(r.stdout);
         let archived = [];
-        if (this.showArchived) {
+        if (this.show.archived) {
           const a = await htask(machine, ["--project", cwd, "list", "--archived", "--json"]);
           if (a.code !== 0) throw new Error(htaskError(machine, a));
           archived = JSON.parse(a.stdout).tasks.sort((x, y) => (y.archived_at ?? 0) - (x.archived_at ?? 0));
@@ -170,6 +188,13 @@ class Panel {
     if (!title) return;
     this.input.set_value("");
     this.htask(["add", "--agent", "you", "--", title], cx);
+  }
+
+  flip(name, cx) {
+    this.show = { ...this.show, [name]: !this.show[name] };
+    try { localStorage.setItem("show", JSON.stringify(this.show)); } catch { /* not remembered */ }
+    if (name === "archived") { this.archived = []; this.refresh(cx); }
+    cx.notify();
   }
 
   toggle(id, cx) {
@@ -246,8 +271,8 @@ class Panel {
     const done = counted.filter((task) => task.status === "done").length;
     const barWidth = Math.max(0, this.width - 28);
     const name = this.project ? this.project.split("/").pop() : "";
-    const shown = sections(this.tasks, this.terminal, this.showDone, this.machine).filter(([, rows]) => rows.length);
-    if (this.showArchived && this.archived.length) shown.push(["Archived", this.archived, 0]);
+    const shown = sections(this.tasks, this.terminal, this.show, this.machine).filter(([, rows]) => rows.length);
+    if (this.show.archived && this.archived.length) shown.push(["Archived", this.archived, 0]);
 
     const empty = this.error ? this.error
       : !this.cwd ? "Focus a terminal to see its repo's tasks."
@@ -265,23 +290,25 @@ class Panel {
         .when(done > 0, (e) => e.child(div().id("htask-archive").px(6).py(2).rounded(5).text_size(11).cursor_pointer()
           .text_color(t.muted).hover((s) => s.bg(t.hover)).tooltip("Archive this repo's done tasks (htask clean --days 0)")
           .on_click((_e, cx) => this.htask(["clean", "--days", "0"], cx)).child("Archive")))
-        .child(div().id("htask-done").px(6).py(2).rounded(5).text_size(11).cursor_pointer()
-          .text_color(this.showDone ? t.foreground : t.dim).bg(this.showDone ? t.raised : t.background).hover((s) => s.bg(t.hover))
-          .on_click((_e, cx) => { this.showDone = !this.showDone; cx.notify(); })
-          .tooltip(this.showDone ? "Hide done tasks" : "Show done tasks").child("Done"))
-        .child(div().id("htask-archived").px(6).py(2).rounded(5).text_size(11).cursor_pointer()
-          .text_color(this.showArchived ? t.foreground : t.dim).bg(this.showArchived ? t.raised : t.background).hover((s) => s.bg(t.hover))
-          .on_click((_e, cx) => { this.showArchived = !this.showArchived; this.archived = []; this.refresh(cx); cx.notify(); })
-          .tooltip(this.showArchived ? "Hide archived tasks" : "Show archived tasks (reopen one to bring it back)").child("Archived")))
+        )
       .child(div().mx(14).h(3).flex_none().rounded(2).bg(t.border)
         .child(div().h_full().rounded(2).bg(t.done).w(counted.length ? barWidth * done / counted.length : 0)))
+      .child(h_flex().flex_none().px(14).pt(10).gap(6).items_center()
+        .children(FILTERS.map(([name, label]) => {
+          const on = this.show[name];
+          return div().id(`show-${name}`).px(9).py(2).rounded(10).text_size(11).cursor_pointer().border_1()
+            .border_color(on ? t.border : t.background).bg(on ? t.raised : t.background)
+            .text_color(on ? t.foreground : t.dim).hover((st) => st.bg(t.hover))
+            .tooltip(`${on ? "Hide" : "Show"} ${label.toLowerCase()} tasks`)
+            .on_click((_e, cx) => this.flip(name, cx)).child(label);
+        })))
       .child(div().flex_1().min_h(0).relative().mt(8)
         .child(v_flex().id("htask-list").absolute().inset_0().overflow_y_scroll().px(6).pb(8)
           .children(shown.map(([title, rows, more]) => v_flex().flex_none()
             .child(div().px(8).pt(8).pb(3).text_size(10.5).font_semibold().text_color(t.dim).child(`${title.toUpperCase()}  ${rows.length + more}`))
             .children(rows.map((task) => this.row(task, t)))
             .when(more > 0, (e) => e.child(div().px(8).pl(30).py(3).text_size(11).text_color(t.dim).child(`+${more} more (Archive to clear)`)))))
-          .when(this.showArchived && !this.archived.length && Boolean(this.project) && !this.loading, (e) => e.child(
+          .when(this.show.archived && !this.archived.length && Boolean(this.project) && !this.loading, (e) => e.child(
             div().px(8).pt(8).text_size(11).text_color(t.dim).child(`Nothing archived in ${name}.`)))
           .when(!shown.length, (e) => e.child(v_flex().p(8).gap(6).text_color(t.dim)
             .child(empty)

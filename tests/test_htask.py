@@ -316,5 +316,32 @@ class TuiArchived(unittest.TestCase):
         self.assertIn("Nothing archived", text(htask._render([], "/r", ctx, 80, True, True, color, [])))
 
 
+class ArchiveOne(Base):
+    def test_archive_done_task_and_reopen(self):
+        self.run_htask("add", "a")
+        self.run_htask("add", "b")
+        self.run_htask("done", "1")
+        self.run_htask("archive", "1")
+        self.assertEqual([t["title"] for t in self.tasks()], ["b"])
+        self.run_htask("reopen", "1")
+        self.assertEqual([t["title"] for t in self.tasks()], ["a", "b"])
+
+    def test_open_tasks_cannot_be_archived(self):
+        self.run_htask("add", "a")
+        out = self.run_htask("archive", "1", check=False)
+        self.assertNotEqual(out.returncode, 0)
+        self.assertIn("only done or dropped", out.stderr)
+
+
+class TodoToggle(unittest.TestCase):
+    def test_hiding_todo(self):
+        from importlib.machinery import SourceFileLoader
+        htask = SourceFileLoader("htask_module", str(HTASK)).load_module()
+        tasks = [{"id": 1, "status": "todo", "pane_id": None, "completed_at": None}]
+        titles = lambda **kw: [t for t, _, _ in htask.order_tasks(tasks, None, True, **kw)]
+        self.assertIn("TO DO", titles())
+        self.assertNotIn("TO DO", titles(show_todo=False))
+
+
 if __name__ == "__main__":
     unittest.main()
