@@ -9,7 +9,7 @@ from pathlib import Path
 HTASK = Path(__file__).resolve().parent.parent / "htask"
 
 
-class HtaskCLI(unittest.TestCase):
+class Base(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         root = Path(self.tmp.name)
@@ -32,6 +32,8 @@ class HtaskCLI(unittest.TestCase):
         self.assertEqual(out["project"], os.path.realpath(cwd or self.repo_a))
         return out["tasks"]
 
+
+class HtaskCLI(Base):
     def test_lifecycle(self):
         self.run_htask("add", "one", "-d", "first, with a comma")
         self.run_htask("add", "two")
@@ -68,6 +70,56 @@ class HtaskCLI(unittest.TestCase):
         out = self.run_htask("list").stdout
         self.assertIn("open", out)
         self.assertNotIn("closed", out)
+
+
+class ClaudeHook(Base):
+    def hook(self, tool, tool_input, tool_response=None, session="s1"):
+        event = {"session_id": session, "cwd": str(self.repo_a / "sub"), "hook_event_name": "PostToolUse",
+                 "tool_name": tool, "tool_input": tool_input, "tool_response": tool_response or {}}
+        out = subprocess.run([sys.executable, str(HTASK), "hook", "claude"], input=json.dumps(event),
+                             env=self.env, capture_output=True, text=True)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        return out
+
+    def test_create_then_update(self):
+        self.hook("TaskCreate", {"subject": "Parse output", "description": "6.x block"}, {"task": {"id": "1"}})
+        self.hook("TaskUpdate", {"taskId": "1", "status": "in_progress"})
+        (t,) = self.tasks()
+        self.assertEqual((t["title"], t["description"], t["status"], t["agent"]),
+                         ("Parse output", "6.x block", "doing", "claude"))
+        self.hook("TaskUpdate", {"taskId": "1", "status": "completed"})
+        self.assertEqual(self.tasks()[0]["status"], "done")
+
+    def test_sessions_do_not_collide(self):
+        self.hook("TaskCreate", {"subject": "a"}, {"task": {"id": "1"}}, session="s1")
+        self.hook("TaskCreate", {"subject": "b"}, {"task": {"id": "1"}}, session="s2")
+        self.hook("TaskUpdate", {"taskId": "1", "status": "completed"}, session="s2")
+        self.assertEqual([(t["title"], t["status"]) for t in self.tasks()], [("a", "todo"), ("b", "done")])
+
+    def test_update_for_unknown_task_is_ignored(self):
+        self.hook("TaskUpdate", {"taskId": "9", "status": "completed"})
+        self.assertEqual(self.tasks(), [])
+
+    def test_todowrite_upserts_by_text(self):
+        self.hook("TodoWrite", {"todos": [{"content": "x", "status": "pending"}, {"content": "y", "status": "pending"}]})
+        self.hook("TodoWrite", {"todos": [{"content": "x", "status": "completed"}, {"content": "y", "status": "in_progress"}]})
+        self.assertEqual([(t["title"], t["status"]) for t in self.tasks()], [("x", "done"), ("y", "doing")])
+
+    def test_bad_input_never_fails(self):
+        out = subprocess.run([sys.executable, str(HTASK), "hook", "claude"], input="not json",
+                             env=self.env, capture_output=True, text=True)
+        self.assertEqual(out.returncode, 0)
+        self.assertIn("htask hook", out.stderr)
+
+    def test_summary(self):
+        self.run_htask("add", "a")
+        self.run_htask("add", "b")
+        self.run_htask("done", "1")
+        self.run_htask("add", "elsewhere", cwd=self.repo_b)
+        self.run_htask("block", "3", "-m", "need data", cwd=self.repo_b)
+        s = json.loads(self.run_htask("summary").stdout)
+        self.assertEqual((s["counts"]["done"], s["counts"]["todo"], s["counts"]["blocked"]), (1, 1, 0))
+        self.assertEqual([(b["title"], b["note"]) for b in s["blocked"]], [("elsewhere", "need data")])
 
 
 if __name__ == "__main__":

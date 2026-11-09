@@ -67,6 +67,12 @@ def connect() -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout=10000")
     conn.executescript(SCHEMA)
+    # v2: external_id ties a row to an agent's own task (claude:<session>:<task id>),
+    # so the hooks update the row they created instead of adding duplicates.
+    if "external_id" not in {r["name"] for r in conn.execute("PRAGMA table_info(tasks)")}:
+        with conn:
+            conn.execute("ALTER TABLE tasks ADD COLUMN external_id TEXT")
+            conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS tasks_external ON tasks (external_id)")
     return conn
 
 
@@ -213,6 +219,89 @@ def cmd_list(args) -> None:
             print(textwrap.indent(r["description"], " " * 16))
         if r["note"]:
             print(textwrap.indent("note: " + r["note"], " " * 16))
+
+
+def cmd_summary(args) -> None:
+    """One read for the app's status chip and tab-bar badge.
+
+    Counts for the project, plus every blocked task in any project, so a
+    blocked task elsewhere can still raise a notification.
+    """
+    conn = connect()
+    project = _project_from_args(args)
+    counts = dict.fromkeys(STATUSES, 0)
+    for row in conn.execute("SELECT status, count(*) AS n FROM tasks WHERE project = ? GROUP BY status", (project,)):
+        counts[row["status"]] = row["n"]
+    blocked = conn.execute(
+        "SELECT id, project, title, note, agent, pane_id, updated_at FROM tasks"
+        " WHERE status = 'blocked' ORDER BY updated_at").fetchall()
+    print(json.dumps({"project": project, "counts": counts, "blocked": [dict(r) for r in blocked]}))
+
+
+# --- agent hooks ---------------------------------------------------------------
+
+# Claude Code's task statuses, and the older TodoWrite list's.
+CLAUDE_STATUS = {"pending": "todo", "in_progress": "doing", "completed": "done", "deleted": "dropped"}
+
+
+def sync_claude(event: dict, conn: sqlite3.Connection) -> int:
+    """Mirror one Claude Code PostToolUse event into the task table. Returns rows touched.
+
+    TaskCreate/TaskUpdate carry Claude's per-session task id ("1", "2", ...):
+    TaskCreate's id is only in the response ({"task": {"id": "1"}}), TaskUpdate's
+    is in the input. TodoWrite resends the whole list each time, keyed by text.
+    """
+    tool, inp = event.get("tool_name"), event.get("tool_input") or {}
+    resp = event.get("tool_response") or {}
+    session, now = event.get("session_id") or "unknown", time.time()
+    project = project_root(event.get("cwd") or os.getcwd())
+
+    def upsert(key, title=None, description=None, status=None) -> int:
+        row = conn.execute("SELECT id FROM tasks WHERE external_id = ?", (key,)).fetchone()
+        if row is None:
+            if title is None:
+                return 0  # an update for a task created before the hook existed
+            conn.execute(
+                "INSERT INTO tasks (project, title, description, status, agent, pane_id,"
+                " created_at, updated_at, completed_at, external_id) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (project, title, description or "", status or "todo", "claude", origin_id(),
+                 now, now, now if status == "done" else None, key))
+            return 1
+        fields = {k: v for k, v in (("title", title), ("description", description), ("status", status)) if v is not None}
+        if not fields:
+            return 0
+        fields["updated_at"] = now
+        if status is not None:
+            fields["completed_at"] = now if status == "done" else None
+        conn.execute(f"UPDATE tasks SET {', '.join(f'{k} = ?' for k in fields)} WHERE id = ?",
+                     (*fields.values(), row["id"]))
+        return 1
+
+    prefix = f"claude:{session}:"
+    if tool == "TaskCreate":
+        task_id = (resp.get("task") or {}).get("id") if isinstance(resp, dict) else None
+        if task_id is None:
+            return 0
+        return upsert(prefix + str(task_id), inp.get("subject") or "(untitled)", inp.get("description"), "todo")
+    if tool == "TaskUpdate" and inp.get("taskId") is not None:
+        return upsert(prefix + str(inp["taskId"]), inp.get("subject"), inp.get("description"),
+                      CLAUDE_STATUS.get(inp.get("status")))
+    if tool == "TodoWrite":
+        return sum(upsert(prefix + "todo:" + t.get("content", ""), t.get("content", ""), None,
+                          CLAUDE_STATUS.get(t.get("status"), "todo"))
+                   for t in inp.get("todos") or [] if t.get("content"))
+    return 0
+
+
+def cmd_hook(args) -> None:
+    """Hook entry point. Never fails the agent's tool call: errors go to stderr, exit 0."""
+    try:
+        event = json.load(sys.stdin)
+        conn = connect()
+        with writing(conn):
+            sync_claude(event, conn)
+    except Exception as e:  # noqa: BLE001 - a broken hook must not block the agent
+        print(f"htask hook: {e}", file=sys.stderr)
 
 
 def cmd_plugin_open(args) -> None:
@@ -437,6 +526,13 @@ def main(argv=None) -> None:
     ls.add_argument("--all", action="store_true", help="include done/dropped")
     ls.add_argument("--json", action="store_true")
     ls.set_defaults(fn=cmd_list)
+
+    sm = sub.add_parser("summary", help="JSON counts for this project and blocked tasks everywhere")
+    sm.set_defaults(fn=cmd_summary)
+
+    hk = sub.add_parser("hook", help="agent hook: mirror the agent's own task list (reads stdin)")
+    hk.add_argument("agent", choices=["claude"])
+    hk.set_defaults(fn=cmd_hook)
 
     sub.add_parser("panel", help="run the TUI panel").set_defaults(fn=run_panel)
     sub.add_parser("plugin-open", help=argparse.SUPPRESS).set_defaults(fn=cmd_plugin_open)

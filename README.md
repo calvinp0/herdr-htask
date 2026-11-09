@@ -46,6 +46,14 @@ Then put it in your layout's right-hand panel stack and give it a button:
 - in the tab bar mod (`tabs-plus/main.js`), add `["htask", "Tasks", "mods/htask/htask.svg"]` to
   `PANELS` and `"htask"` to the `enabled` list.
 
+For the status-bar chip, add this to the `status` row (before `status-controls`):
+`{ "id": "status-htask", "type": "block", "content": { "mod": "htask", "props": { "view": "chip" } }, "size": { "weight": 1.3 }, "min": 96 }`.
+The chip shows `done/total` for the focused repo and how many tasks are blocked in any repo.
+It raises a Herdr toast when a task becomes blocked (click it to jump to that agent's terminal),
+and publishes `shared("htask.summary")` = `{project, done, total, blocked}`, which the tab bar's
+Tasks button shows as `2/5` plus a red dot. The chip has to be in the layout for toasts and the
+badge to work: the panel only starts once it has been opened.
+
 Clicking **Tasks** in the tab bar opens and closes the panel. Click a task for its description,
 agent and last update. `htask` rewrites `~/.local/share/herdr-tasks/signal/changed` after every
 change, and the panel watches that folder. It can't watch the DB folder itself, because SQLite
@@ -68,6 +76,23 @@ description = "open task panel"
 ```
 
 Panel keys: `j`/`k` scroll, `d` show or hide done tasks, `v` show or hide descriptions, `q` close.
+
+## Claude Code: automatic, through a hook
+
+Claude Code already plans with its own task tool. This hook copies `TaskCreate`/`TaskUpdate`
+(and the older `TodoWrite`) into htask, keyed by session and Claude's task id, so the panel fills
+without the agent doing anything. Add it to `~/.claude/settings.json`:
+
+```json
+"hooks": {
+  "PostToolUse": [
+    { "matcher": "TaskCreate|TaskUpdate|TodoWrite",
+      "hooks": [ { "type": "command", "command": "~/.local/bin/htask hook claude", "timeout": 10 } ] }
+  ]
+}
+```
+
+The hook always exits 0, so a failure can never block a tool call. Errors go to stderr.
 
 ## Tell the agents to use it
 

@@ -1,21 +1,14 @@
 // htask: what the agents have done and what's left, for the repo of the focused terminal.
-// Reads `htask list --json` (one SQLite DB for every agent). Redraws when htask writes (it rewrites
-// signal/changed after each change) and when focus moves to a terminal in another folder.
+// Two views: the panel (default; the right-hand stack) and props.view "chip" (status bar, chip.js).
+// Both read htask (one SQLite DB for every agent) and redraw when it writes or focus changes repo.
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, Scrollbar } from "gpui-base";
-import { spaces, panes, focused, exec, watchFolder, theme, home } from "herdr";
+import { exec, theme, props } from "herdr";
+import { HTASK, location, watchSignal } from "./common.js";
+import { Chip } from "./chip.js";
 
-const HTASK = () => `${home()}/.local/bin/htask`;
-const SIGNAL_DIR = () => `${home()}/.local/share/herdr-tasks/signal`;
 // Theme colour for each task status: the same colours the agents list uses.
 const COLOR = { doing: "working", blocked: "blocked", todo: "muted", done: "done", dropped: "dim" };
-
-// The focused terminal's folder. A mod pane (this panel, Files, ...) has none: keep the last one.
-function location() {
-  const f = focused(), space = spaces().find((s) => s.active);
-  const pane = f?.pane ? panes().find((p) => p.pane === f.pane) : null;
-  return { cwd: pane?.cwd || f?.cwd || null, terminal: f?.terminal ?? null, remote: Boolean(space?.machine) };
-}
 
 // Groups the tasks into the panel's sections, in display order. Empty sections are skipped.
 //
@@ -39,28 +32,13 @@ function ago(seconds) {
   return `${Math.floor(s / 86400)}d ago`;
 }
 
-export default class Tasks extends View {
+class Panel {
   init(_props, cx) {
     this.tasks = []; this.project = null; this.cwd = null; this.terminal = null;
     this.open = new Set(); this.showDone = true; this.width = 0;
-    this.watch(cx);
+    watchSignal(cx, (cx) => this.refresh(cx));
     // Backstop for writes that bypass htask (sqlite3 by hand) or a watch that failed.
     cx.timer.every(15000, (cx) => this.refresh(cx));
-  }
-
-  watch(cx) {
-    cx.spawn(async (cx) => {
-      try {
-        for (;;) {
-          await watchFolder(SIGNAL_DIR());
-          this.refresh(cx);
-        }
-      } catch {
-        // No signal folder yet (htask has never written): make it, then watch again.
-        const made = await exec("mkdir", ["-p", SIGNAL_DIR()]).catch(() => null);
-        if (made?.code === 0) this.watch(cx);
-      }
-    });
   }
 
   refresh(cx) {
@@ -163,5 +141,16 @@ export default class Tasks extends View {
             .when(!this.remote && !this.error && Boolean(this.project), (e) => e.child(
               div().px(8).py(5).rounded(6).bg(t.raised).text_size(11.5).text_color(t.muted).child('htask add "title" -d "what done looks like"'))))))
         .child(Scrollbar.vertical("htask-list").absolute().inset_0()));
+  }
+}
+
+export default class Tasks extends View {
+  init(p, cx) {
+    this.view = props()?.view === "chip" ? new Chip() : new Panel();
+    this.view.init(p, cx);
+  }
+
+  render(cx) {
+    return this.view.render(cx);
   }
 }

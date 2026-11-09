@@ -1,0 +1,87 @@
+// The status-bar chip: "✓ 2/5" for the focused terminal's repo and how many tasks are blocked
+// anywhere. Click: show or hide the Tasks panel. It is the copy that is always alive, so it also
+// raises a toast when a task becomes blocked and publishes the counts for the tab bar's button.
+import { div, svg } from "gpui-kit";
+import { h_flex } from "gpui-base";
+import { exec, notify, shared, setShared, theme } from "herdr";
+import { HTASK, SUMMARY_KEY, location, togglePanel, panelShown, watchSignal } from "./common.js";
+
+// Blocked task ids already announced. Persisted, so a restart doesn't repeat them; an id leaves
+// the list once its task is unblocked, so blocking it again announces it again.
+const NOTIFIED_KEY = "htask.notified";
+const name = (path) => (path ?? "").split("/").pop();
+// A Herdr app terminal address (t7, or vps/t7 on another machine): the toast can jump there.
+const isTerminal = (id) => /^([\w.-]+\/)?t\d+$/.test(id ?? "");
+
+export class Chip {
+  init(_props, cx) {
+    this.summary = null; this.cwd = null;
+    watchSignal(cx, (cx) => this.refresh(cx));
+    cx.timer.every(15000, (cx) => this.refresh(cx));
+    this.refresh(cx);
+  }
+
+  refresh(cx) {
+    if (this.loading) { this.again = true; return; }
+    this.loading = true;
+    const cwd = this.cwd;
+    cx.spawn(async (cx) => {
+      try {
+        const args = cwd && !this.remote ? ["--project", cwd, "summary"] : ["summary"];
+        const r = await exec(HTASK(), args, { timeout: 10000 });
+        if (r.code !== 0) throw new Error((r.stderr || r.stdout).trim());
+        const data = JSON.parse(r.stdout);
+        if (cwd === this.cwd) { this.summary = data; this.error = null; this.publish(data); }
+        this.announce(data.blocked);
+      } catch (e) {
+        this.error = String(e?.message ?? e);
+      } finally {
+        this.loading = false;
+        if (this.again) { this.again = false; this.refresh(cx); }
+        cx.notify();
+      }
+    });
+  }
+
+  publish(data) {
+    const c = data.counts, total = c.todo + c.doing + c.blocked + c.done;
+    const next = { project: data.project, done: c.done, total, blocked: data.blocked.length };
+    // setShared re-renders every mod: only when something changed.
+    if (JSON.stringify(shared(SUMMARY_KEY)) !== JSON.stringify(next)) setShared(SUMMARY_KEY, next);
+  }
+
+  announce(blocked) {
+    const seen = new Set(shared(NOTIFIED_KEY) ?? []);
+    for (const task of blocked) {
+      if (seen.has(task.id)) continue;
+      notify({
+        title: `Blocked: ${task.title}`,
+        body: [`${name(task.project)} #${task.id}`, task.note].filter(Boolean).join(" · "),
+        level: "warning",
+        ...(isTerminal(task.pane_id) ? { action: { name: "agent.focus", args: { terminal: task.pane_id } } } : {}),
+      });
+    }
+    const now = blocked.map((task) => task.id);
+    if (now.length !== seen.size || now.some((id) => !seen.has(id))) setShared(NOTIFIED_KEY, now);
+  }
+
+  render(cx) {
+    const loc = location();
+    this.remote = loc.remote;
+    if (loc.cwd && loc.cwd !== this.cwd) { this.cwd = loc.cwd; this.refresh(cx); }
+
+    const t = theme(), s = shared(SUMMARY_KEY), on = panelShown();
+    const blocked = this.summary?.blocked ?? [];
+    const tip = this.error ? `htask: ${this.error}`
+      : blocked.length ? `Blocked:\n${blocked.map((b) => `${name(b.project)} #${b.id} ${b.title}`).join("\n")}`
+      : s?.total ? `${s.done} of ${s.total} tasks done in ${name(s.project)}` : "No tasks in this repo";
+    return h_flex().id("htask-chip").size_full().px(8).gap(6).items_center().cursor_pointer().text_size(11.5)
+      .text_color(on ? t.foreground : t.muted).hover((st) => st.bg(t.hover))
+      .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+      .on_click(() => togglePanel()).tooltip(tip)
+      .child(svg("mods/htask/htask.svg").size(13).flex_none())
+      .child(div().flex_none().child(s?.total ? `${s.done}/${s.total}` : "Tasks"))
+      .when(blocked.length > 0, (el) => el.child(h_flex().flex_none().gap(4).items_center().text_color(t.blocked)
+        .child(div().size(6).rounded(3).bg(t.blocked)).child(`${blocked.length} blocked`)));
+  }
+}
