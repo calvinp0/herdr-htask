@@ -159,22 +159,31 @@ Both always exit 0, so a broken hook can never block a tool call.
 
 ## Agent instructions
 
-**Claude Code** (`~/.claude/CLAUDE.md`, with the hooks above):
+**Claude Code** (`~/.claude/CLAUDE.md`, with the hooks above). Not every Claude Code session has
+a task-list tool, so the instructions cover both cases:
 
 ```markdown
 ## Task tracking (htask)
 
-The Herdr task panel shows your plan. A hook copies your own task tool (TaskCreate/TaskUpdate,
-or TodoWrite) into it, so for any task with more than one step, plan with that tool as usual:
-subject = short title, description = what done looks like, and keep statuses current.
+The Herdr task panel shows your plan. For any task with more than one step, record the plan in
+one of two ways, depending on your tools:
 
-Use the `htask` CLI only for what the task tool can't say (ids come from `htask list`):
+- **If you have a task-list tool** (TaskCreate/TaskUpdate, or TodoWrite): plan with it as usual
+  (subject = short title, description = what done looks like) and keep statuses current. A hook
+  copies it into the panel. Don't also `htask add` those steps.
+- **If you don't have one:** use the `htask` CLI itself: `htask add "<short title>" -d "<what done
+  looks like>"` for each step, `htask start <id>` before working on one, `htask done <id>` after
+  verifying it.
+
+Either way, use the `htask` CLI for (ids come from `htask list`):
 - `htask list` at the start, to pick up open tasks earlier sessions left in this repo.
 - `htask note <id> "<progress, findings, next step>"` to leave information for the human.
 - `htask block <id> -m "<what you need>"` when you are waiting on the user or something
   external. This notifies the human.
-- Don't `htask add` steps you already created with the task tool: they would appear twice.
 ```
+
+If a session does both, the hook doesn't add a duplicate: a task from Claude's tool is linked to
+an unlinked `htask add` task with the same title, from the same terminal, in the same repo.
 
 **Codex, Pi and other agents** (`~/.codex/AGENTS.md`, `~/.pi/agent/AGENTS.md`, or a project's
 `AGENTS.md`):

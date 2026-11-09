@@ -425,6 +425,16 @@ def sync_claude(event: dict, conn: sqlite3.Connection) -> int:
 
     def upsert(key, title=None, description=None, status=None) -> int:
         row = conn.execute("SELECT id FROM tasks WHERE external_id = ?", (key,)).fetchone()
+        if row is None and title is not None:
+            # Claude may have run `htask add` for the same step too (a session without the task
+            # tool falls back to htask; a confused one does both). Link to that task instead of
+            # adding a duplicate: same repo, same terminal, same title, not yet linked, not archived.
+            row = conn.execute(
+                "SELECT id FROM tasks WHERE external_id IS NULL AND archived_at IS NULL AND project = ?"
+                " AND pane_id IS ? AND lower(trim(title)) = lower(trim(?)) ORDER BY id DESC LIMIT 1",
+                (project, origin_id(), title)).fetchone()
+            if row is not None:
+                conn.execute("UPDATE tasks SET external_id = ? WHERE id = ?", (key, row["id"]))
         if row is None:
             if title is None:
                 return 0  # an update for a task created before the hook existed

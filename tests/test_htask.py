@@ -104,6 +104,20 @@ class ClaudeHook(Base):
         self.hook("TaskUpdate", {"taskId": "1", "status": "completed"}, session="s2")
         self.assertEqual([(t["title"], t["status"]) for t in self.tasks()], [("a", "todo"), ("b", "done")])
 
+    def test_links_to_matching_htask_add_instead_of_duplicating(self):
+        self.run_htask("add", "Parse output")        # Claude ran htask add for the step...
+        self.hook("TaskCreate", {"subject": "parse output ", "description": "6.x block"}, {"task": {"id": "1"}})
+        self.hook("TaskUpdate", {"taskId": "1", "status": "completed"})  # ...and the task tool too
+        (t,) = self.tasks()
+        self.assertEqual((t["title"], t["status"], t["description"]), ("parse output ", "done", "6.x block"))
+
+    def test_same_title_from_another_terminal_is_not_linked(self):
+        self.env["HERDR_PANE_ID"] = "w9:p9"
+        self.run_htask("add", "Parse output")
+        self.env["HERDR_PANE_ID"] = "w1:p1"
+        self.hook("TaskCreate", {"subject": "Parse output"}, {"task": {"id": "1"}})
+        self.assertEqual(len(self.tasks()), 2)
+
     def test_update_for_unknown_task_is_ignored(self):
         self.hook("TaskUpdate", {"taskId": "9", "status": "completed"})
         self.assertEqual(self.tasks(), [])
