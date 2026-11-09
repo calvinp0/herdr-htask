@@ -37,24 +37,35 @@ It works with both Herdr front ends:
 - Herdr desktop app 0.1.14+ with herdr-core (`hc`), and/or the Herdr terminal UI 0.9+
 - git (tasks are grouped by repo)
 
-## Install the CLI
+## Install
 
 ```sh
 git clone https://github.com/calvinp0/herdr-htask
 cd herdr-htask
-ln -s "$PWD/htask" ~/.local/bin/htask     # agents need it on their PATH
+./install.sh
 ```
+
+`install.sh` links `htask` and `htask-claude-inbox` into `~/.local/bin`, copies the desktop-app
+mod into `~/.config/herdr-app/mods/htask` (if you have the app), links the terminal-UI plugin
+(if you have `herdr`), and finishes with `htask doctor`. Then set up the parts below that you use.
+
+### Moving or updating
+
+Nothing outside the checkout names the checkout: agents run `htask`, and the Claude hooks run
+`~/.local/bin/htask` and `~/.local/bin/htask-claude-inbox`. So:
+
+- **After moving or renaming the folder**, run `./install.sh` from its new place. It re-points
+  the links and the plugin.
+- **After `git pull`**, run `./install.sh` too: the desktop-app mod is a copy, so it only changes
+  when it's copied again.
+- **`htask doctor`** checks the links, the Claude hooks, the plugin link and whether the app mod
+  matches the checkout, and says what to run when something is off. If htask can't run, the
+  status chip shows a red `htask ✗`.
 
 ## Herdr desktop app
 
-Copy the mod and check it:
-
-```sh
-cp -r herdr-app/mods/htask ~/.config/herdr-app/mods/
-herdr-app check ~/.config/herdr-app/mods/htask
-```
-
-Then add it to your layout. Shipped layouts are read-only, so do this in your own copy
+`install.sh` copies the mod into `~/.config/herdr-app/mods/htask` and checks it. Then add it to
+your layout. Shipped layouts are read-only, so do this in your own copy
 (`herdr-app do layout.clone '{"name":"main","as":"my-layout"}'`), in
 `~/.config/herdr-app/layouts/<layout>.json`:
 
@@ -86,11 +97,7 @@ it there once (`scp htask <machine>:~/.local/bin/htask`). Remote spaces refresh 
 
 ## Herdr terminal UI
 
-```sh
-herdr plugin link "$PWD"
-```
-
-Bind a key in `~/.config/herdr/config.toml`, then run `herdr server reload-config`:
+`install.sh` links the plugin (`herdr plugin link`). Bind a key in `~/.config/herdr/config.toml`, then run `herdr server reload-config`:
 
 ```toml
 [[keys.command]]
@@ -115,7 +122,8 @@ rows = [["state_icon", "workspace", "$tasks"], ["branch", "git_status"]]
 
 ## Claude Code hooks
 
-Add both to `~/.claude/settings.json` (replace `<repo>` with where you cloned this):
+Add both to `~/.claude/settings.json`. They go through the links `install.sh` makes, so they keep
+working if you move the checkout:
 
 ```json
 "hooks": {
@@ -123,17 +131,17 @@ Add both to `~/.claude/settings.json` (replace `<repo>` with where you cloned th
     { "matcher": "TaskCreate|TaskUpdate|TodoWrite",
       "hooks": [ { "type": "command", "command": "~/.local/bin/htask hook claude", "timeout": 10 } ] },
     { "matcher": "*",
-      "hooks": [ { "type": "command", "command": "<repo>/hooks/claude-inbox.sh", "timeout": 10 } ] }
+      "hooks": [ { "type": "command", "command": "~/.local/bin/htask-claude-inbox", "timeout": 10 } ] }
   ],
   "UserPromptSubmit": [
-    { "hooks": [ { "type": "command", "command": "<repo>/hooks/claude-inbox.sh", "timeout": 10 } ] }
+    { "hooks": [ { "type": "command", "command": "~/.local/bin/htask-claude-inbox", "timeout": 10 } ] }
   ]
 }
 ```
 
 - **`htask hook claude`** copies Claude's own task tool (`TaskCreate`/`TaskUpdate`, or the older
   `TodoWrite`) into htask, so Claude sessions fill the panel without being told to.
-- **`claude-inbox.sh`** tells Claude about tasks you changed in the panel, at its next tool call
+- **`htask-claude-inbox`** (`hooks/claude-inbox.sh`) tells Claude about tasks you changed in the panel, at its next tool call
   or prompt, including Claude's own task id so it updates its list instead of undoing your change.
   It runs on every tool call; a shell check (about 3 ms) skips Python unless htask has written
   since that session last looked.
@@ -191,6 +199,7 @@ htask list [--all] [--archived] [--json]
 htask clean [--days 7] [--everywhere] [--dry-run]   # archive old done/dropped tasks
 htask summary                             # JSON: counts here + blocked tasks everywhere
 htask panel                               # the terminal panel (curses)
+htask doctor                              # check the install
 ```
 
 Global options: `--project <dir>` (default: the git root of the current directory) and

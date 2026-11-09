@@ -86,7 +86,7 @@ export class Chip {
 
     const t = theme(), s = shared(SUMMARY_KEY), on = panelShown();
     const blocked = this.summary?.blocked ?? [];
-    const tip = this.error ? `htask: ${this.error}`
+    const tip = this.error ? `htask: ${this.error}\nRun htask doctor (or ./install.sh in the htask folder).`
       : blocked.length ? `Blocked:\n${blocked.map((b) => `${name(b.project)} #${b.id} ${b.title}`).join("\n")}`
       : s?.total ? `${s.done} of ${s.total} tasks done in ${name(s.project)}` : "No tasks in this repo";
     return h_flex().id("htask-chip").size_full().px(8).gap(6).items_center().cursor_pointer().text_size(11.5)
@@ -94,7 +94,10 @@ export class Chip {
       .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
       .on_click(() => togglePanel()).tooltip(tip)
       .child(svg("mods/htask/htask.svg").size(13).flex_none())
-      .child(div().flex_none().child(s?.total ? `${s.done}/${s.total}` : "Tasks"))
+      // A broken install (htask moved, missing on a remote machine) shows here, not just in the tooltip.
+      .child(this.error
+        ? div().flex_none().text_color(t.blocked).child("htask ✗")
+        : div().flex_none().child(s?.total ? `${s.done}/${s.total}` : "Tasks"))
       .when(blocked.length > 0, (el) => el.child(h_flex().flex_none().gap(4).items_center().text_color(t.blocked)
         .child(div().size(6).rounded(3).bg(t.blocked)).child(`${blocked.length} blocked`)));
   }

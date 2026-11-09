@@ -313,6 +313,84 @@ def cmd_clean(args) -> None:
     print(f"archived {len(rows)} task(s) in {scope}")
 
 
+def cmd_doctor(args) -> None:
+    """Check that everything that uses htask can still reach it. Exit 1 if anything is broken.
+
+    The things that break silently when the checkout moves: the ~/.local/bin links agents and
+    hooks run, Claude Code hooks, the TUI plugin link, and the app mod (a copy, so it can go stale).
+    """
+    import hashlib
+    repo = Path(__file__).resolve().parent
+    home, problems = Path.home(), []
+
+    def check(ok: bool, good: str, bad: str) -> None:
+        print(("  ok  " if ok else "  !!  ") + (good if ok else bad))
+        if not ok:
+            problems.append(bad)
+
+    print(f"htask checkout: {repo}")
+    links = {"htask": repo / "htask", "htask-claude-inbox": repo / "hooks" / "claude-inbox.sh"}
+    for name, target in links.items():
+        link = home / ".local" / "bin" / name
+        check(link.exists() and link.resolve() == target.resolve(),
+              f"~/.local/bin/{name} -> this checkout",
+              f"~/.local/bin/{name} is missing or points elsewhere: run ./install.sh")
+
+    settings = home / ".claude" / "settings.json"
+    if settings.exists():
+        try:
+            hooks = json.loads(settings.read_text()).get("hooks", {})
+        except ValueError:
+            hooks = {}
+        commands = [h.get("command", "") for entries in hooks.values() for e in entries
+                    for h in e.get("hooks", []) if any(k in h.get("command", "") for k in ("htask", "claude-inbox"))]
+        if not commands:
+            print("  --  no htask hooks in ~/.claude/settings.json (optional, see README)")
+        for command in commands:
+            exe = Path(os.path.expanduser(command.split()[0]))
+            check(exe.exists(), f"Claude hook runs {command}",
+                  f"Claude hook runs {command}, which doesn't exist")
+            if exe.exists() and str(repo) in os.path.realpath(os.path.expanduser(command.split()[0])) \
+                    and ".local/bin" not in command:
+                check(False, "", f"Claude hook names the checkout directly ({command}): "
+                                 "use ~/.local/bin/htask-claude-inbox so moving the folder can't break it")
+
+    app_mod = Path(os.environ.get("HERDR_APP_HOME", home / ".config" / "herdr-app")) / "mods" / "htask"
+    if app_mod.exists():
+        digest = lambda f: hashlib.sha256(f.read_bytes()).hexdigest()
+        stale = [f.name for f in (repo / "herdr-app" / "mods" / "htask").iterdir()
+                 if not (app_mod / f.name).exists() or digest(f) != digest(app_mod / f.name)]
+        check(not stale, "desktop-app mod matches this checkout",
+              f"desktop-app mod is out of date ({', '.join(stale)}): run ./install.sh")
+    else:
+        print("  --  desktop-app mod not installed (optional)")
+
+    plugins = home / ".config" / "herdr" / "plugins.json"
+    entry = None
+    if plugins.exists():
+        try:
+            entry = next((p for p in json.loads(plugins.read_text()) if p.get("plugin_id") == PLUGIN_ID), None)
+        except ValueError:
+            entry = None
+    if entry is None:
+        print("  --  Herdr terminal-UI plugin not linked (optional)")
+    else:
+        root = Path(entry.get("plugin_root", "")).resolve()
+        check(root == repo, "Herdr terminal-UI plugin linked to this checkout",
+              f"Herdr terminal-UI plugin is linked to {root}: run ./install.sh")
+
+    try:
+        conn = connect()
+        n = conn.execute("SELECT count(*) FROM tasks").fetchone()[0]
+        check(True, f"database {db_path()} ({n} tasks)", "")
+    except sqlite3.Error as e:
+        check(False, "", f"database {db_path()} can't be opened: {e}")
+
+    print("\nall good" if not problems else f"\n{len(problems)} problem(s)")
+    if problems:
+        sys.exit(1)
+
+
 # --- agent hooks ---------------------------------------------------------------
 
 # Claude Code's task statuses, and the older TodoWrite list's.
@@ -681,6 +759,8 @@ def main(argv=None) -> None:
     cl.add_argument("--everywhere", action="store_true", help="every project, not just this one")
     cl.add_argument("--dry-run", action="store_true", help="list what would be archived")
     cl.set_defaults(fn=cmd_clean)
+
+    sub.add_parser("doctor", help="check the install: links, hooks, app mod, TUI plugin, DB").set_defaults(fn=cmd_doctor)
 
     sm = sub.add_parser("summary", help="JSON counts for this project and blocked tasks everywhere")
     sm.set_defaults(fn=cmd_summary)

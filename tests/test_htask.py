@@ -283,5 +283,23 @@ class Order(unittest.TestCase):
                          ["BLOCKED", "IN PROGRESS", "TO DO"])
 
 
+class Doctor(Base):
+    def test_reports_a_missing_install(self):
+        self.env["HOME"] = self.tmp.name  # a home with nothing installed
+        out = self.run_htask("doctor", check=False)
+        self.assertEqual(out.returncode, 1)
+        self.assertIn("~/.local/bin/htask is missing or points elsewhere: run ./install.sh", out.stdout)
+
+    def test_passes_after_linking(self):
+        home = Path(self.tmp.name)
+        (home / ".local" / "bin").mkdir(parents=True)
+        (home / ".local" / "bin" / "htask").symlink_to(HTASK)
+        (home / ".local" / "bin" / "htask-claude-inbox").symlink_to(HTASK.parent / "hooks" / "claude-inbox.sh")
+        self.env["HOME"] = str(home)
+        out = self.run_htask("doctor", check=False)
+        self.assertEqual(out.returncode, 0, out.stdout)
+        self.assertIn("all good", out.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()
