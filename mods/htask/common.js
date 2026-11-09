@@ -3,6 +3,16 @@ import { spaces, panes, focused, home, layout, run, exec, watchFolder, openOverl
 import { spotIn } from "./layout-edit.js";
 
 export const HTASK = () => `${home()}/.local/bin/htask`;
+// This mod's version: the same as the htask CLI's (a test keeps them in step). The panel compares
+// it with `htask --version` on each machine it uses, and says which side to update.
+export const MOD_VERSION = "0.1.1";
+
+const parts = (v) => (v ?? "").split(".").map((n) => parseInt(n, 10) || 0);
+export function compareVersions(a, b) {
+  const [x, y] = [parts(a), parts(b)];
+  for (let i = 0; i < 3; i++) if ((x[i] ?? 0) !== (y[i] ?? 0)) return (x[i] ?? 0) < (y[i] ?? 0) ? -1 : 1;
+  return 0;
+}
 
 // Run htask for a space: here, or on its SSH machine through herdr-core. The remote copy is
 // looked for in that machine's ~/.local/bin, then on its PATH; each machine has its own DB.

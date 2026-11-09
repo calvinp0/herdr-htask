@@ -733,5 +733,64 @@ class ConnectMatcherUpgrade(Base):
         self.assertEqual(matchers, ["TaskCreate|TaskUpdate|TodoWrite|ExitPlanMode"])
 
 
+class Update(unittest.TestCase):
+    """htask update in a throwaway checkout that's one commit behind its 'GitHub'."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        root = Path(self.tmp.name)
+        git = lambda *a, cwd=root: subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", *a],
+                                                  cwd=cwd, check=True, capture_output=True, text=True)
+        repo = HTASK.parent
+        git("clone", "--quiet", "--no-local", str(repo), "seed")
+        git("checkout", "--quiet", "-B", "main", cwd=root / "seed")
+        # Test the working tree's code, not just the last commit.
+        import shutil
+        for f in ("htask", "install.sh", "hooks/claude-inbox.sh"):
+            shutil.copy2(repo / f, root / "seed" / f)
+        git("commit", "--quiet", "--allow-empty", "-am", "working tree", cwd=root / "seed")
+        git("clone", "--quiet", "--bare", "seed", "origin.git")
+        git("clone", "--quiet", "origin.git", "checkout")
+        git("clone", "--quiet", "origin.git", "pusher")
+        (root / "pusher" / "NEWS").write_text("new\n")
+        git("add", "NEWS", cwd=root / "pusher")
+        git("commit", "--quiet", "-m", "news", cwd=root / "pusher")
+        git("push", "--quiet", "origin", "main", cwd=root / "pusher")
+        self.checkout, self.home = root / "checkout", root / "home"
+        self.home.mkdir()
+        # No herdr / herdr-app on PATH: install.sh must not touch the real Herdr's plugin registry.
+        self.env = {"HOME": str(self.home), "PATH": "/usr/bin:/bin", "HTASK_DB": str(root / "t.db")}
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def run_update(self, *args):
+        return subprocess.run([sys.executable, str(self.checkout / "htask"), "update", *args],
+                              env=self.env, capture_output=True, text=True)
+
+    def test_check_then_update(self):
+        check = self.run_update("--check")
+        self.assertEqual(check.returncode, 0, check.stderr)
+        self.assertIn("1 new commit(s)", check.stdout)
+        self.assertFalse((self.checkout / "NEWS").exists())  # --check changes nothing
+        up = self.run_update()
+        self.assertEqual(up.returncode, 0, up.stderr + up.stdout)
+        self.assertIn("pulled 1 commit(s)", up.stdout)
+        self.assertTrue((self.checkout / "NEWS").exists())
+        link = self.home / ".local" / "bin" / "htask"
+        self.assertEqual(link.resolve(), (self.checkout / "htask").resolve())  # install.sh ran
+        self.assertIn("already up to date", self.run_update().stdout)
+
+
+class Versions(unittest.TestCase):
+    def test_cli_manifest_and_mod_versions_match(self):
+        import re
+        root = HTASK.parent
+        cli = re.search(r'__version__ = "([^"]+)"', HTASK.read_text()).group(1)
+        manifest = re.search(r'^version = "([^"]+)"', (root / "herdr-plugin.toml").read_text(), re.M).group(1)
+        mod = re.search(r'MOD_VERSION = "([^"]+)"', (root / "mods" / "htask" / "common.js").read_text()).group(1)
+        self.assertEqual((cli, manifest), (mod, mod))
+
+
 if __name__ == "__main__":
     unittest.main()

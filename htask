@@ -465,6 +465,39 @@ def cmd_clean(args) -> None:
     print(f"archived {len(rows)} task(s) in {scope}")
 
 
+def cmd_update(args) -> None:
+    """Update this checkout from GitHub and re-install: git pull, ./install.sh, then refresh the
+    agents that are already connected (never connects new ones). Run it on every machine with htask."""
+    repo = Path(__file__).resolve().parent
+    git = lambda *a: subprocess.run(["git", "-C", str(repo), *a], capture_output=True, text=True)
+    if git("rev-parse", "--git-dir").returncode != 0:
+        sys.exit(f"htask: {repo} isn't a git checkout; update it the way you installed it")
+    if git("fetch", "--quiet").returncode != 0:
+        sys.exit("htask: git fetch failed (offline, or no access to the remote?)")
+    behind = git("rev-list", "--count", "HEAD..@{upstream}").stdout.strip() or "0"
+    if args.check:
+        print(f"htask {__version__}: " + ("up to date" if behind == "0" else f"{behind} new commit(s); run htask update"))
+        return
+    if behind != "0":
+        pulled = git("pull", "--ff-only", "--quiet")
+        if pulled.returncode != 0:
+            sys.exit(f"htask: git pull failed; local changes in {repo}?\n{pulled.stderr.strip()}")
+    # The rest runs the new code: the pull may have changed install.sh, htask and the instructions.
+    new = str(repo / "htask")
+    version = subprocess.run([sys.executable, new, "--version"], capture_output=True, text=True).stdout.strip()
+    print(f"{version}: " + ("already up to date" if behind == "0" else f"pulled {behind} commit(s)"))
+    install = subprocess.run(["sh", str(repo / "install.sh")], capture_output=True, text=True)
+    print(install.stdout.rstrip().splitlines()[-1] if install.stdout.strip() else "install.sh ran")
+    if install.returncode != 0:
+        sys.exit(f"htask: install.sh failed:\n{install.stderr.strip()}")
+    status = json.loads(subprocess.run([sys.executable, new, "connect", "status", "--json"],
+                                       capture_output=True, text=True).stdout or "{}")
+    for key, st in status.items():
+        if st.get("connected") or st.get("partial"):
+            out = subprocess.run([sys.executable, new, "connect", key], capture_output=True, text=True)
+            print((out.stdout.strip().splitlines() or [f"{key}: done"])[0])
+
+
 def cmd_doctor(args) -> None:
     """Check that everything that uses htask can still reach it. Exit 1 if anything is broken.
 
@@ -1384,6 +1417,10 @@ def main(argv=None) -> None:
     cl.set_defaults(fn=cmd_clean)
 
     sub.add_parser("doctor", help="check the install: links, hooks, app mod, TUI plugin, DB").set_defaults(fn=cmd_doctor)
+
+    up = sub.add_parser("update", help="git pull this checkout, re-install, refresh connected agents")
+    up.add_argument("--check", action="store_true", help="only say whether an update is available")
+    up.set_defaults(fn=cmd_update)
 
     cn = sub.add_parser("connect", help="set up (or --remove) htask for Claude Code, Codex, Pi")
     cn.add_argument("target", choices=["status", "all", *CONNECT_AGENTS])

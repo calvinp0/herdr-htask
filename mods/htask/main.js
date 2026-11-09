@@ -5,7 +5,7 @@ import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, Scrollbar, InputState, Input } from "gpui-base";
 import { theme, props, run, agents, terminals, panes, hc, notify, nextCommand, closeOverlay, settings, knownAgents, layout, layouts, shared } from "herdr";
 import { addToLayout, spotIn } from "./layout-edit.js";
-import { htask, htaskError, qualify, location, watchSignal } from "./common.js";
+import { htask, htaskError, qualify, location, watchSignal, MOD_VERSION, compareVersions } from "./common.js";
 import { Chip } from "./chip.js";
 
 // Theme colour for each task status: the same colours the agents list uses.
@@ -124,6 +124,8 @@ class Panel {
     this.open = new Set(); this.width = 0;
     // Which sections show; remembered per panel copy. Archived tasks are only fetched while shown.
     this.show = loadShow(); this.archived = [];
+    // htask --version per machine ("" for this computer), asked once per machine per session.
+    this.versions = {};
     // The Run menu: which to-do it's open for, and the agents installed where this space runs.
     this.menu = null; this.known = null;
     // The Agents section: htask connect status for this space's machine, loaded when opened.
@@ -168,6 +170,12 @@ class Panel {
         }
         if (cwd !== this.cwd || machine !== this.machine) return;
         this.project = data.project; this.tasks = data.tasks; this.archived = archived; this.error = null;
+        const key = machine ?? "";
+        if (!(key in this.versions)) {
+          this.versions[key] = null;  // asking
+          const v = await htask(machine, ["--version"]).catch(() => null);
+          this.versions[key] = /htask (\S+)/.exec(v?.stdout ?? "")?.[1] ?? "";
+        }
       } catch (e) {
         if (cwd === this.cwd && machine === this.machine) { this.error = String(e?.message ?? e); this.tasks = []; this.project = null; }
       } finally {
@@ -323,6 +331,16 @@ class Panel {
 
   closePanes() {
     for (const p of panes().filter((p) => p.mod === "htask")) run("pane.close", { pane: p.pane });
+  }
+
+  // When this panel and htask on the machine it reads from aren't the same version, say which to update.
+  versionNote() {
+    const v = this.versions[this.machine ?? ""];
+    if (!v || compareVersions(v, MOD_VERSION) === 0) return null;
+    const where = this.machine ? `on ${this.machine}` : "on this computer";
+    return compareVersions(v, MOD_VERSION) < 0
+      ? `htask ${where} is ${v}; this panel is ${MOD_VERSION}. Update it there: htask update`
+      : `This panel (${MOD_VERSION}) is older than htask ${where} (${v}). Update the mod: ./install.sh, or on Windows copy mods\\htask again.`;
   }
 
   // Agents: connect or disconnect Claude Code, Codex and Pi (htask connect). Runs where the space
@@ -584,6 +602,8 @@ class Panel {
             .on_click((_e, cx) => this.flip(name, cx)).child(label);
         })))
       .when(this.setupOpen, (e) => e.child(this.setupSection(t)))
+      .when(Boolean(this.versionNote()), (e) => e.child(div().flex_none().mx(14).mt(10).px(10).py(7).rounded(8)
+        .bg(t.raised).text_size(11.5).text_color(t.blocked).child(this.versionNote())))
       // Open as a pane or window, not in the layout: only this tab has it, and nothing hides it.
       .when(!spotIn(layout()), (e) => e.child(h_flex().flex_none().mx(14).mt(10).px(10).py(7).gap(8).items_center()
         .rounded(8).bg(t.raised).text_size(11.5)

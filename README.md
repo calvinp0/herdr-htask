@@ -35,6 +35,7 @@ htask connect all       # sets up Claude Code, Codex and Pi
 ```
 
 `htask connect` backs up each file before changing it. `--remove` takes out exactly what it added.
+To update later, run `htask update` (on each machine where it's installed).
 
 ## Set up the panel
 

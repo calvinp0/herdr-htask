@@ -16,6 +16,7 @@ htask clean [--days 7] [--everywhere] [--dry-run]   # archive old done/dropped t
 htask summary                             # JSON: counts here + blocked tasks everywhere
 htask connect status|all|claude|codex|pi [--remove]   # set agents up (or take htask out)
 htask doctor                              # check the install
+htask update [--check]                    # git pull, re-install, refresh connected agents
 htask panel                               # the terminal panel (curses)
 ```
 
@@ -28,7 +29,10 @@ htask panel                               # the terminal panel (curses)
 
 Nothing outside the checkout names it: agents run `htask`, and the hooks run links in `~/.local/bin`.
 
-- **After `git pull`**, run `./install.sh`. The app mod is a copy, so it only changes when copied again.
+- **To update**, run `htask update` on each machine with htask (this one and any you SSH into). It
+  pulls, re-installs and refreshes the agents you've connected. `--check` only says if there's one.
+- **On Windows**, `git pull` in your clone and copy `mods\htask` into the app's `mods` folder again.
+- **Out of step?** The panel says so: "htask on <machine> is 0.1.0; this panel is 0.1.1", and which to update.
 - **After moving or renaming the folder**, run `./install.sh` from its new place.
 - **`htask doctor`** checks the links, hooks, plugin and app mod, and says what to run if something's off.
 
