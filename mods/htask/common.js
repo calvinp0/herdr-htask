@@ -21,11 +21,11 @@ export function compareVersions(a, b) {
 export const NOT_HERE = "htask isn't on this computer (Windows). Spaces on a machine that has it work.";
 export const notHere = (machine) => !machine && window()?.platform === "windows";
 
-export function htask(machine, args) {
+export function htask(machine, args, timeout) {
   if (notHere(machine)) return Promise.resolve({ code: 127, stdout: "", stderr: NOT_HERE });
-  if (!machine) return exec(HTASK(), args, { timeout: 10000 });
+  if (!machine) return exec(HTASK(), args, { timeout: timeout ?? 10000 });
   const script = 'h="$HOME/.local/bin/htask"; [ -x "$h" ] || h=htask; exec "$h" "$@"';
-  return exec("sh", ["-lc", script, "htask", ...args], { on: machine, timeout: 15000 });
+  return exec("sh", ["-lc", script, "htask", ...args], { on: machine, timeout: timeout ?? 15000 });
 }
 
 // The error to show when htask failed: say so plainly when it isn't installed there.

@@ -5,7 +5,7 @@ import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, Scrollbar, InputState, Input } from "gpui-base";
 import { theme, props, run, agents, terminals, panes, hc, notify, nextCommand, closeOverlay, settings, knownAgents, layout, layouts, shared } from "herdr";
 import { addToLayout, spotIn } from "./layout-edit.js";
-import { htask, htaskError, qualify, location, watchSignal, MOD_VERSION, compareVersions } from "./common.js";
+import { htask, htaskError, qualify, location, watchSignal, MOD_VERSION, compareVersions, notHere } from "./common.js";
 import { Chip } from "./chip.js";
 
 // Theme colour for each task status: the same colours the agents list uses.
@@ -128,6 +128,8 @@ class Panel {
     this.show = loadShow(); this.archived = [];
     // htask --version per machine ("" for this computer), asked once per machine per session.
     this.versions = {};
+    // Updates run from the panel: { machine, busy, check } (check: the last `htask update --check`).
+    this.updateState = {};
     // The Run menu: which to-do it's open for, and the agents installed where this space runs.
     this.menu = null; this.known = null;
     // The Agents section: htask connect status for this space's machine, loaded when opened.
@@ -139,6 +141,8 @@ class Panel {
         const name = /^toggle-(todo|done|dropped|archived|all)$/.exec(c)?.[1];
         if (name) this.flip(name, cx);
         if (c === "dock") this.dock(cx);
+        if (c === "agents") this.toggleSetup(cx);
+        if (c === "check-update" || c === "update") this.runUpdate(c === "check-update", cx);
       }
     });
     this.input = InputState.new({ placeholder: "Add a task, then Enter" });
@@ -341,13 +345,44 @@ class Panel {
   }
 
   // When this panel and htask on the machine it reads from aren't the same version, say which to update.
+  // { text, action }: action is "update" when a button here can fix it (htask update on the machine:
+  // on Linux/macOS it also re-copies this panel), null when it can't (Windows: copy the mod).
   versionNote() {
     const v = this.versions[this.machine ?? ""];
     if (!v || compareVersions(v, MOD_VERSION) === 0) return null;
     const where = this.machine ? `on ${this.machine}` : "on this computer";
-    return compareVersions(v, MOD_VERSION) < 0
-      ? `htask ${where} is ${v}; this panel is ${MOD_VERSION}. Update it there: htask update`
-      : `This panel (${MOD_VERSION}) is older than htask ${where} (${v}). Update the mod: ./install.sh, or on Windows copy mods\\htask again.`;
+    if (compareVersions(v, MOD_VERSION) < 0)
+      return { text: `htask ${where} is ${v}; this panel is ${MOD_VERSION}.`, action: "Update htask there" };
+    if (!this.machine)  // htask here is newer: its install.sh re-copies this panel
+      return { text: `This panel (${MOD_VERSION}) is older than htask here (${v}).`, action: "Update the panel" };
+    return { text: `This panel (${MOD_VERSION}) is older than htask ${where} (${v}). Copy mods\\htask from a ${v} checkout into the app again.`, action: null };
+  }
+
+  // htask update [--check] where the focused space runs. git pull + install.sh + refresh can take a
+  // while, so it gets two minutes. The result is a toast; then the version is asked again.
+  runUpdate(check, cx) {
+    const machine = this.machine, key = machine ?? "";
+    if (this.updateState[key]?.busy) return;
+    this.updateState[key] = { ...this.updateState[key], busy: check ? "Checking…" : "Updating…" };
+    cx.spawn(async (cx) => {
+      const r = await htask(machine, ["update", ...(check ? ["--check"] : [])], 120000)
+        .catch((e) => ({ code: 1, stdout: "", stderr: String(e?.message ?? e) }));
+      const out = (r.stdout || "").trim(), where = machine ?? "this computer";
+      if (r.code !== 0) {
+        notify({ title: `Couldn't ${check ? "check" : "update"} htask on ${where}`, level: "warning", body: htaskError(machine, r) });
+      } else if (check) {
+        this.updateState[key] = { check: out };
+      } else {
+        notify({ title: `htask on ${where} updated`, level: "success", body: out });
+        this.updateState[key] = {};
+        delete this.versions[key];        // ask the version again
+        this.refresh(cx);
+        if (this.setupOpen) this.loadConnections(cx);
+      }
+      if (this.updateState[key]?.busy) this.updateState[key] = { ...this.updateState[key], busy: null };
+      cx.notify();
+    });
+    cx.notify();
   }
 
   // Agents: connect or disconnect Claude Code, Codex and Pi (htask connect). Runs where the space
@@ -408,7 +443,21 @@ class Panel {
       .child(div().pt(4).text_size(10.5).text_color(t.dim)
         .child("Agents started afterwards pick it up. Claude Code and Codex get hooks and instructions (Codex asks you to approve its hook once); Pi gets instructions."))
       .when(c?.agents?.codex?.available && c.agents.codex.hooks_enabled === false, (e) => e.child(div().pt(2).text_size(10.5)
-        .text_color(t.blocked).child("Codex hooks are off: add [features] hooks = true to ~/.codex/config.toml.")));
+        .text_color(t.blocked).child("Codex hooks are off: add [features] hooks = true to ~/.codex/config.toml.")))
+      .when(!notHere(this.machine), (e) => e.child(this.updateRow(t)));
+  }
+
+  // In the Agents box: htask's version where the space runs, Check for updates, and Update.
+  updateRow(t) {
+    const key = this.machine ?? "", st = this.updateState[key] ?? {}, v = this.versions[key];
+    const behind = /new commit/.test(st.check ?? "");
+    const button = (id, label, check) => div().id(id).flex_none().px(8).py(2).rounded(5).text_size(11).cursor_pointer()
+      .bg(check ? t.raised : t.solid).text_color(check ? t.foreground : t.solid_foreground).hover((s) => s.bg(t.hover))
+      .on_click((_e, cx) => { cx.stop_propagation(); this.runUpdate(check, cx); }).child(st.busy ?? label);
+    return h_flex().pt(8).mt(6).gap(8).items_center().border_t(1).border_color(t.border)
+      .child(div().flex_1().min_w(0).text_size(11).text_color(t.muted).truncate()
+        .child(`htask ${v || "?"} on ${this.machine ?? "this computer"}` + (st.check ? ` · ${behind ? st.check.replace(/^htask \S+: /, "") : "up to date"}` : "")))
+      .child(behind ? button("htask-do-update", "Update", false) : button("htask-check-update", "Check for updates", true));
   }
 
   // ▸ Run… and ? Explain…: a menu under a task. Nothing is routed implicitly: every choice names
@@ -616,8 +665,14 @@ class Panel {
             .on_click((_e, cx) => this.flip(name, cx)).child(label);
         })))
       .when(this.setupOpen, (e) => e.child(this.setupSection(t)))
-      .when(Boolean(this.versionNote()), (e) => e.child(div().flex_none().mx(14).mt(10).px(10).py(7).rounded(8)
-        .bg(t.raised).text_size(11.5).text_color(t.blocked).child(this.versionNote())))
+      .when(Boolean(this.versionNote()), (e) => {
+        const note = this.versionNote(), busy = this.updateState[this.machine ?? ""]?.busy;
+        return e.child(h_flex().flex_none().mx(14).mt(10).px(10).py(7).gap(8).items_center().rounded(8).bg(t.raised).text_size(11.5)
+          .child(div().flex_1().min_w(0).text_color(t.blocked).child(note.text))
+          .when(Boolean(note.action), (e) => e.child(div().id("htask-version-update").flex_none().px(9).py(4).rounded(6)
+            .cursor_pointer().bg(t.solid).text_color(t.solid_foreground)
+            .on_click((_e, cx) => this.runUpdate(false, cx)).child(busy ?? note.action))));
+      })
       // Open as a pane or window, not in the layout: only this tab has it, and nothing hides it.
       .when(!spotIn(layout()), (e) => e.child(h_flex().flex_none().mx(14).mt(10).px(10).py(7).gap(8).items_center()
         .rounded(8).bg(t.raised).text_size(11.5)

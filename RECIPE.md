@@ -68,7 +68,13 @@ the agent that owns the task.
   Code, Codex, Pi; Claude and Codex get hooks, Pi only instructions) with its state (`connected` in `done`, `partly connected` in `blocked`, `not
   connected` / `not installed` in `dim`) and a Connect / Finish / Disconnect button that runs
   `htask connect <agent> [--remove]` where the space runs; a toast reports what changed, with the
-  backup names. The empty state offers "New here? Connect your agents…".
+  backup names. The empty state offers "New here? Connect your agents…". Its last row reads
+  "htask <version> on <machine or this computer>" with **Check for updates** (`htask update --check`
+  where the space runs), which becomes **Update** (`htask update`, two-minute timeout) when there are
+  new commits; the result is a toast, then the version is asked again. Not on Windows' own spaces.
+- When the panel's version (MOD_VERSION) and that machine's `htask --version` differ, a banner says
+  so; with **Update htask there** when htask is older, **Update the panel** when htask on this
+  computer is newer (its install.sh re-copies the mod), and only text for a Windows panel.
 - **? Explain…** (to do, in progress, blocked) opens the same kind of menu, "Talk it through in:",
   with the task's own agent first. The message asks the agent to explain the task in its own
   conversation, as deep as needed, without starting it, to expect follow-ups, and at the end to save a
