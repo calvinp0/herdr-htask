@@ -5,7 +5,7 @@ import { spotIn } from "./layout-edit.js";
 export const HTASK = () => `${home()}/.local/bin/htask`;
 // This mod's version: the same as the htask CLI's (a test keeps them in step). The panel compares
 // it with `htask --version` on each machine it uses, and says which side to update.
-export const MOD_VERSION = "0.1.1";
+export const MOD_VERSION = "0.2.0";
 
 const parts = (v) => (v ?? "").split(".").map((n) => parseInt(n, 10) || 0);
 export function compareVersions(a, b) {
