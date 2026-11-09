@@ -1,5 +1,6 @@
 // Shared by the panel (main.js) and the status chip (chip.js).
 import { spaces, panes, focused, home, layout, run, exec, watchFolder, openOverlay, window } from "herdr";
+import { spotIn } from "./layout-edit.js";
 
 export const HTASK = () => `${home()}/.local/bin/htask`;
 
@@ -50,27 +51,9 @@ export function find(node, id) {
   return null;
 }
 
-// Where the panel is in the shown layout, with no assumptions about ids: the htask block that is
-// the panel (not the chip), its stack if it is one of a stack's children, and the nodes above it.
-// null when the layout has no panel block.
+// Where the panel is in the shown layout (layout-edit.js; no assumptions about ids).
 function panelSpot() {
-  const path = [];
-  const walk = (node) => {
-    if (!node) return false;
-    path.push(node);
-    if (node.type === "block" && node.content?.mod === "htask" && !node.content?.props?.view) return true;
-    for (const child of node.children ?? []) if (walk(child)) return true;
-    path.pop();
-    return false;
-  };
-  if (!walk(layout())) return null;
-  const block = path[path.length - 1], parent = path[path.length - 2];
-  const stack = parent?.type === "stack" ? parent : null;
-  // What to hide: climb from the stack (or the block) while the parent holds nothing else, so the
-  // whole side column goes, not just its contents. Never the root.
-  let i = path.length - (stack ? 2 : 1);
-  while (i > 1 && (path[i - 1].children ?? []).length === 1) i -= 1;
-  return { block, stack, above: path.slice(1, -1), container: path[i] };
+  return spotIn(layout());
 }
 
 // Is the Tasks panel showing?

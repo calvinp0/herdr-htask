@@ -3,7 +3,8 @@
 // Both read htask (one SQLite DB for every agent) and redraw when it writes or focus changes repo.
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, Scrollbar, InputState, Input } from "gpui-base";
-import { theme, props, run, agents, terminals, panes, hc, notify, nextCommand, closeOverlay, settings, knownAgents } from "herdr";
+import { theme, props, run, agents, terminals, panes, hc, notify, nextCommand, closeOverlay, settings, knownAgents, layout, layouts, shared } from "herdr";
+import { addToLayout, spotIn } from "./layout-edit.js";
 import { htask, htaskError, qualify, location, watchSignal } from "./common.js";
 import { Chip } from "./chip.js";
 
@@ -131,6 +132,7 @@ class Panel {
         const c = await nextCommand();
         const name = /^toggle-(todo|done|dropped|archived)$/.exec(c)?.[1];
         if (name) this.flip(name, cx);
+        if (c === "dock") this.dock(cx);
       }
     });
     this.input = InputState.new({ placeholder: "Add a task, then Enter" });
@@ -270,6 +272,53 @@ class Panel {
       .when(live, (e) => e.cursor_pointer().hover((s) => s.bg(t.raised)).tooltip(`Show ${own.addr}`)
         .on_click((_e, cx) => { cx.stop_propagation(); run("agent.focus", { terminal: own.addr }); }))
       .child(`${own.addr} ${OWNER_WORD[own.state] ?? own.state}`);
+  }
+
+  // "Add to my layout": dock this panel (and the status-bar chip) in the shown layout, so it's in
+  // every tab and space and the chip can hide it. Herdr's own layouts can't change structure, so a
+  // shipped one is copied first; the change waits until Herdr shows the copy (finishDock, from
+  // render), rather than assuming the switch has happened. Then the Tasks panes go: the docked
+  // panel replaces them.
+  dock(cx) {
+    const root = layout(), name = shared("layout");
+    const { tree, panel, chip } = addToLayout(root);
+    if (!panel && !chip) {
+      this.closePanes();
+      notify({ title: "Tasks is already in your layout", level: "info" });
+      return;
+    }
+    const shipped = !root?.cloned_from && ["main", "terminals", "win98"].includes(name);
+    let target = name;
+    if (shipped) {
+      const names = new Set(layouts() ?? []);
+      let i = 2;
+      target = `${name}-tasks`;
+      while (names.has(target)) target = `${name}-tasks-${i++}`;
+      run("layout.clone", { name, as: target });
+    }
+    this.pendingDock = { tree, target, copied: shipped, from: name, chip };
+    this.finishDock(cx);
+  }
+
+  finishDock(cx) {
+    const p = this.pendingDock;
+    if (!p || shared("layout") !== p.target) return;  // not showing the copy yet: render calls again
+    this.pendingDock = null;
+    run("layout.set", { layout: p.tree });
+    const spot = spotIn(p.tree);
+    if (spot?.stack) run("layout.select", { stack: spot.stack.id, child: spot.block.id });
+    for (const node of [...(spot?.above ?? []), spot?.block]) if (node?.hidden && node.id) run("layout.show", { id: node.id });
+    notify({
+      title: "Tasks added to your layout", level: "success",
+      body: (p.copied ? `Herdr's own "${p.from}" layout can't change, so this is your copy, "${p.target}" (Ctrl+Shift+L switches layouts). ` : "")
+        + (p.chip ? "The Tasks chip in the status bar shows and hides it." : ""),
+    });
+    this.closePanes();
+    cx.notify();
+  }
+
+  closePanes() {
+    for (const p of panes().filter((p) => p.mod === "htask")) run("pane.close", { pane: p.pane });
   }
 
   // Agents: connect or disconnect Claude Code, Codex and Pi (htask connect). Runs where the space
@@ -455,6 +504,7 @@ class Panel {
   }
 
   render(cx) {
+    if (this.pendingDock) this.finishDock(cx);
     const loc = location();
     if (loc.cwd && (loc.cwd !== this.cwd || loc.machine !== this.machine)) {
       this.cwd = loc.cwd; this.machine = loc.machine; this.open.clear(); this.refresh(cx);
@@ -514,6 +564,12 @@ class Panel {
             .on_click((_e, cx) => this.flip(name, cx)).child(label);
         })))
       .when(this.setupOpen, (e) => e.child(this.setupSection(t)))
+      // Open as a pane or window, not in the layout: only this tab has it, and nothing hides it.
+      .when(!spotIn(layout()), (e) => e.child(h_flex().flex_none().mx(14).mt(10).px(10).py(7).gap(8).items_center()
+        .rounded(8).bg(t.raised).text_size(11.5)
+        .child(div().flex_1().min_w(0).text_color(t.muted).child("Only in this tab. Dock it to have it everywhere, with a status-bar chip to show and hide it."))
+        .child(div().id("htask-dock").flex_none().px(9).py(4).rounded(6).cursor_pointer().bg(t.solid).text_color(t.solid_foreground)
+          .on_click((_e, cx) => this.dock(cx)).child(this.pendingDock ? "Adding…" : "Add to my layout"))))
       .child(div().flex_1().min_h(0).relative().mt(8)
         .child(v_flex().id("htask-list").absolute().inset_0().overflow_y_scroll().px(6).pb(8)
           .children(shown.map(([title, rows, more, collapsible]) => v_flex().flex_none()

@@ -72,6 +72,12 @@ the agent that owns the task.
 - A to-do or in-progress task with unfinished dependencies shows a `dim` "after #3" tag; its Run
   menu starts with a red "Comes after #3, not done yet." line, its Done button reads **Done anyway**
   (`htask done <id> --force`), and clicking its status mark does nothing (the tooltip says why).
+- Opened outside the layout (as a pane or window), the panel shows a banner: "Only in this tab…"
+  with **Add to my layout**. That adds the panel to the stack holding Files/Changes and the chip
+  beside the status bar (wrapping a lone status block in a row), via `layout-edit.js`'s pure
+  `addToLayout`; on a shipped layout it runs `layout.clone {as: <name>-tasks}` first and applies
+  `layout.set` only once `shared("layout")` shows the copy; then it shows the panel and closes the
+  Tasks panes. Also `htask.dock` as a key command.
 - Every change you make runs `htask --by you ...`. If the task belongs to a live agent: Claude Code
   hears about it from its inbox hook at its next step (a toast says so); any other agent gets a
   `[Herdr task panel] ...` message typed into its terminal with `hc send`, which refuses while the

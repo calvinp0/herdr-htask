@@ -38,3 +38,5 @@ jobs:
             node --check "$RUNNER_TEMP/$(basename "$f" .js).mjs"
             echo "ok $f"
           done
+      - name: Layout change tests
+        run: node --test tests/layout_edit.test.mjs

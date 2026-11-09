@@ -89,9 +89,12 @@ focus one of their spaces.
    Copy-Item -Recurse -Force "$env:TEMP\herdr-htask\mods\htask" "$HOME\.config\herdr-app\mods\"
    ```
 
-   The Tasks panel docks on the right the first time the app sees it. For blocked-task toasts and
-   the count, also add the status-bar chip to your layout (below).
 3. Add the machine in the app (Settings → Machines) if it isn't there yet, and open a space on it.
+4. Open the panel next to a terminal: `herdr-app do pane.split --direction right --mod htask`, then
+   click **Add to my layout** in it. That docks the panel in the layout's right-hand panel (next to
+   Files and Changes) and adds the status-bar chip, which shows and hides it in every tab and space.
+   Herdr's own layouts can't change, so on one of those it makes your copy (`main-tasks`) and
+   switches to it; `Ctrl+Shift+L` switches layouts.
 
 Spaces on the Windows PC itself show a plain "Tasks" chip: there's no htask there to read.
 
@@ -101,7 +104,9 @@ Spaces on the Windows PC itself show a plain "Tasks" chip: there's no htask ther
 running in Herdr: *"Read ~/.config/herdr-app/AGENTS.md, then add this mod:
 https://github.com/calvinp0/herdr-htask"*. It follows [RECIPE.md](RECIPE.md).
 
-Then add it to your layout. Shipped layouts are read-only, so do this in your own copy
+The quickest way: open it as a pane (`herdr-app do pane.split --direction right --mod htask`) and
+click **Add to my layout** (or bind `htask.dock`). It does what follows for you, on a copy if the layout
+is one of Herdr's own. By hand: shipped layouts are read-only, so do this in your own copy
 (`herdr-app do layout.clone '{"name":"main","as":"my-layout"}'`), in
 `~/.config/herdr-app/layouts/<layout>.json`:
 
@@ -365,8 +370,9 @@ Query it directly, for example:
 python3 -m unittest discover tests
 ```
 
-CI runs them on Linux and macOS with Python 3.10 and 3.12, and parses every mod file with
-`node --check` (the app's own `herdr-app check` needs Herdr, so run it locally).
+CI runs them on Linux and macOS with Python 3.10 and 3.12, parses every mod file with `node --check`,
+and runs `node --test tests/layout_edit.test.mjs` for the layout change behind "Add to my layout"
+(the app's own `herdr-app check` needs Herdr, so run it locally).
 
 ## License
 
