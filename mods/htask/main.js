@@ -666,9 +666,10 @@ class Panel {
           .max_w(110).text_size(10).text_color(task.project === this.project ? t.accent : t.dim).truncate()
           .child(task.project.split("/").pop())))
         .child(this.idBadge(task.id, t)))
-      .when(this.hasLinks(task, open), (e) => e.child(this.links(task, open, t)))
       .when(Boolean(task.note) && !done, (e) => e.child(detail(`↳ ${task.note}`, task.status === "blocked" ? t.blocked : t.muted)))
       .when(orphaned, (e) => e.child(detail("Nobody is working on this now. Pick it up or move it back to to-do.", t.blocked)))
+      // Links after the note: the note says what's happening, the links say how it relates.
+      .when(this.hasLinks(task, open), (e) => e.child(this.links(task, open, t)))
       .when(open && Boolean(task.description), (e) => e.child(detail(task.description, t.muted)))
       .when(open, (e) => e.child(detail(
         [task.agent, task.pane_id, `updated ${ago(task.updated_at)}`].filter(Boolean).join(" · "), t.dim)))

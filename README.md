@@ -13,10 +13,10 @@ that, see mods like Over9k To-do).
 The picture above is an illustration. Here is the real panel, showing this repo's own tasks:
 
 <p align="center">
-  <img src="preview.png" width="420" alt="The Tasks panel in the Herdr desktop app: To do, Done, Dropped and Archived filter chips, a blocked task with its reason, a task in progress, three to-do tasks, the five most recent done tasks with Show 5 more, and four archived ones, with a Tasks 10/15 button and a red dot in the tab bar">
+  <img src="preview.png" width="420" alt="The real Tasks panel in the Herdr app, for this repo: a blocked task with its reason, a task in progress with a follow-up, a to-do that comes from and waits for it, the five most recent done tasks with their link chips and Show 17 more, number badges on the right, and a Tasks 22/26 button with a red dot in the tab bar">
 </p>
 
-The status bar gets a chip with the same count: <img src="docs/chip.png" height="22" alt="Status-bar chip: 10/15, 5 blocked">
+The status bar gets a chip with the same count: <img src="docs/chip.png" height="22" alt="Status-bar chip: 22/26, 5 blocked">
 (The empty middle of the panel is cut from the screenshot.)
 
 ## How it works
