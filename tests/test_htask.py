@@ -632,5 +632,79 @@ class DetectAgent(Base):
         self.assertEqual(self.detect(), "None")
 
 
+class Dependencies(Base):
+    def test_after_next_and_waiting(self):
+        self.run_htask("add", "design")
+        self.run_htask("add", "build", "--after", "1")
+        self.run_htask("add", "ship", "--after", "1,2")
+        out = json.loads(self.run_htask("list", "--json").stdout)["tasks"]
+        self.assertEqual([(t["title"], t["after"], t["waiting"]) for t in out],
+                         [("design", [], []), ("build", [1], [1]), ("ship", [1, 2], [1, 2])])
+        self.assertIn("build  (after #1)", self.run_htask("list").stdout)
+        self.assertTrue(self.run_htask("next").stdout.startswith("#1 design"))
+        self.run_htask("done", "1")
+        self.assertTrue(self.run_htask("next").stdout.startswith("#2 build"))
+        self.run_htask("drop", "2")  # dropped counts as out of the way
+        self.assertTrue(self.run_htask("next").stdout.startswith("#3 ship"))
+
+    def test_starting_early_warns_but_works(self):
+        self.run_htask("add", "a")
+        self.run_htask("add", "b", "--after", "1")
+        out = self.run_htask("start", "2")
+        self.assertIn("comes after #1, not done yet", out.stderr)
+        self.assertEqual(self.tasks()[1]["status"], "doing")
+
+    def test_loops_and_self_are_refused(self):
+        self.run_htask("add", "a")
+        self.run_htask("add", "b", "--after", "1")
+        self.assertIn("loop", self.run_htask("depend", "1", "--on", "2", check=False).stderr)
+        self.assertIn("itself", self.run_htask("depend", "1", "--on", "1", check=False).stderr)
+        self.assertIn("no task #9", self.run_htask("depend", "1", "--on", "9", check=False).stderr)
+
+    def test_depend_clear(self):
+        self.run_htask("add", "a")
+        self.run_htask("add", "b", "--after", "1")
+        self.assertIn("after nothing", self.run_htask("depend", "2", "--clear").stdout)
+
+
+class ClaudePlanAndDeps(Base):
+    def hook(self, tool, tool_input, tool_response=None):
+        event = {"session_id": "s1", "cwd": str(self.repo_a), "hook_event_name": "PostToolUse",
+                 "tool_name": tool, "tool_input": tool_input, "tool_response": tool_response or {}}
+        out = subprocess.run([sys.executable, str(HTASK), "hook", "claude"], input=json.dumps(event),
+                             env=self.env, capture_output=True, text=True)
+        self.assertEqual(out.returncode, 0, out.stderr)
+
+    def test_approved_plan_becomes_one_task(self):
+        plan = "# Plan: move parsing to 6.x\n\n## Context\n\nThe parser breaks on 6.1.\n\n1. Read\n2. Fix\n"
+        self.hook("ExitPlanMode", {"plan": plan, "planFilePath": "/p/plan.md"})
+        self.hook("ExitPlanMode", {"plan": plan, "planFilePath": "/p/plan.md"})  # same plan: no duplicate
+        (t,) = self.tasks()
+        self.assertEqual((t["title"], t["status"], t["agent"]), ("Plan: move parsing to 6.x", "doing", "claude"))
+        self.assertIn("The parser breaks on 6.1.", t["description"])
+        self.assertIn("Plan file: /p/plan.md", t["description"])
+
+    def test_blocked_by_becomes_a_dependency(self):
+        self.hook("TaskCreate", {"subject": "first"}, {"task": {"id": "1"}})
+        self.hook("TaskCreate", {"subject": "second", "addBlockedBy": ["1"]}, {"task": {"id": "2"}})
+        out = json.loads(self.run_htask("list", "--json").stdout)["tasks"]
+        self.assertEqual([t["after"] for t in out], [[], [out[0]["id"]]])
+
+
+class ConnectMatcherUpgrade(Base):
+    def test_old_mirror_matcher_is_widened(self):
+        home = Path(self.tmp.name) / "home"
+        (home / ".claude").mkdir(parents=True)
+        self.env["HOME"] = str(home)
+        cmd = str(home / ".local" / "bin" / "htask") + " hook claude"
+        settings = home / ".claude" / "settings.json"
+        settings.write_text(json.dumps({"hooks": {"PostToolUse": [
+            {"matcher": "TaskCreate|TaskUpdate|TodoWrite", "hooks": [{"type": "command", "command": cmd}]}]}}))
+        self.run_htask("connect", "claude")
+        matchers = [e["matcher"] for e in json.loads(settings.read_text())["hooks"]["PostToolUse"]
+                    if "hook claude" in e["hooks"][0]["command"]]
+        self.assertEqual(matchers, ["TaskCreate|TaskUpdate|TodoWrite|ExitPlanMode"])
+
+
 if __name__ == "__main__":
     unittest.main()

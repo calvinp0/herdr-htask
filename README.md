@@ -107,6 +107,11 @@ In the panel:
   In progress with that agent's live state (`t15 working`) and to Done when it finishes;
 - click a task's status dot to mark it done, or to reopen it;
 - type in the box at the bottom and press Enter to add a task for the next agent;
+- **? Explain…** on an open task asks an agent to look into it and write a short explanation
+  (what it involves, why, which parts of the code, what done looks like, open questions) into the
+  task's description, without starting it. Same choices as Run: the task's own agent if it's still
+  running (listed first), another agent in the repo, or a new tab;
+- a task that comes after unfinished ones shows `after #3`; Run warns about it;
 - in-progress and blocked tasks show their agent's live state (`t6 working`). Click it to jump to
   that terminal. If the agent has exited or its terminal has closed, the task says so;
 - the **To do**, **Done**, **Dropped** and **Archived** chips show or hide those sections (Blocked
@@ -156,7 +161,7 @@ go through the links `install.sh` makes, so they keep working if you move the ch
 ```json
 "hooks": {
   "PostToolUse": [
-    { "matcher": "TaskCreate|TaskUpdate|TodoWrite",
+    { "matcher": "TaskCreate|TaskUpdate|TodoWrite|ExitPlanMode",
       "hooks": [ { "type": "command", "command": "~/.local/bin/htask hook claude", "timeout": 10 } ] },
     { "matcher": "*",
       "hooks": [ { "type": "command", "command": "~/.local/bin/htask-claude-inbox", "timeout": 10 } ] }
@@ -168,7 +173,10 @@ go through the links `install.sh` makes, so they keep working if you move the ch
 ```
 
 - **`htask hook claude`** copies Claude's own task tool (`TaskCreate`/`TaskUpdate`, or the older
-  `TodoWrite`) into htask, so Claude sessions fill the panel without being told to.
+  `TodoWrite`) into htask, so Claude sessions fill the panel without being told to. Dependencies
+  Claude's task tool sends (`addBlockedBy`) become htask dependencies. An approved plan-mode plan
+  (`ExitPlanMode`) becomes one in-progress "Plan: …" task with the plan's opening and its file path;
+  the instructions ask Claude to record the plan's steps as tasks, in order.
 - **`htask-claude-inbox`** (`hooks/claude-inbox.sh`) tells Claude about tasks you changed in the panel, at its next tool call
   or prompt, including Claude's own task id so it updates its list instead of undoing your change.
   It runs on every tool call; a shell check (about 3 ms) skips Python unless htask has written
@@ -228,8 +236,13 @@ one of two ways, depending on your tools:
   looks like>"` for each step, `htask start <id>` before working on one, `htask done <id>` after
   verifying it.
 
+After a plan is approved in plan mode, record its steps the same way, in order.
+
 Either way, use the `htask` CLI for (ids come from `htask list`):
-- `htask list` at the start, to pick up open tasks earlier sessions left in this repo.
+- `htask list` at the start, to pick up open tasks earlier sessions left in this repo
+  (`htask next` names the first one that isn't waiting on another).
+- `htask depend <id> --on <earlier id>` when a step can't start before another is done
+  (or `htask add ... --after <id>`).
 - `htask note <id> "<progress, findings, next step>"` to leave information for the human.
 - `htask block <id> -m "<what you need>"` when you are waiting on the user or something
   external. This notifies the human.
@@ -252,7 +265,10 @@ The Herdr task panel shows your plan. For any task with more than one step:
   <id>` after verifying it.
 
 Either way, use the `htask` CLI for (ids come from `htask list`):
-- `htask list` at the start, to pick up open tasks earlier sessions left in this repo.
+- `htask list` at the start, to pick up open tasks earlier sessions left in this repo
+  (`htask next` names the first one that isn't waiting on another).
+- `htask depend <id> --on <earlier id>` when a step can't start before another is done
+  (or `htask add ... --after <id>`).
 - `htask note <id> "<progress, findings, next step>"` to leave information for the human.
 - `htask block <id> -m "<what you need>"` when you are waiting on the user or something external. This notifies the human.
 - A message starting with `[Herdr task panel]` means the human changed one of your tasks: follow it, and update your plan to match so your next update doesn't undo it.
@@ -267,7 +283,9 @@ For any task with more than one step, record the plan with `htask` so it shows i
 the Herdr task panel. Tasks are scoped to the current git repo.
 
 - `htask list` to see open tasks first, so you pick up existing work instead of duplicating it.
-- `htask add "<short title>" -d "<what done looks like>"` for each step.
+- `htask add "<short title>" -d "<what done looks like>"` for each step, in order; add
+  `--after <id>` when a step can't start before an earlier one is done. `htask next` names the
+  first step that isn't waiting.
 - `htask start <id>` before working on a step, `htask done <id>` after verifying it.
 - `htask note <id> "<progress, findings, next step>"` to leave information for the human.
 - `htask block <id> -m "<what you need>"` when you are waiting on the user or something external. This notifies the human.
@@ -281,7 +299,9 @@ hear about it.
 ## CLI reference
 
 ```sh
-htask add "title" [-d "description"] [--status todo|doing|blocked|done|dropped]
+htask add "title" [-d "description"] [--after 3,4] [--status todo|doing|blocked|done|dropped]
+htask depend <id> --on 3 [--clear]        # this task comes after #3
+htask next                                # the first to-do that isn't waiting on another
 htask start|done|drop|reopen <id>...      # reopen = back to to-do (also unblocks); start claims the task for this terminal
 htask block <id> -m "what you need"
 htask note <id> "text"
@@ -303,6 +323,8 @@ Global options: `--project <dir>` (default: the git root of the current director
 - `tasks`: one row per task. `project` is the repo root; `agent` and `pane_id` (Herdr app
   terminal like `t6`, or TUI pane like `w1:p2`) are filled in automatically; `external_id` ties a
   row to a Claude task; `archived_at` is set by `htask clean`.
+- `deps`: task order, `task_id` comes after `depends_on`. A dependency that's done or dropped no
+  longer holds a task back. Loops are refused.
 - `changes`: who changed what (`by = 'you'` for the human), read by the Claude inbox hook.
 - `hook_cursor`: how far each Claude session has read `changes`.
 

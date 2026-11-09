@@ -63,6 +63,11 @@ the agent that owns the task.
   connected` / `not installed` in `dim`) and a Connect / Finish / Disconnect button that runs
   `htask connect <agent> [--remove]` where the space runs; a toast reports what changed, with the
   backup names. The empty state offers "New here? Connect your agents…".
+- **? Explain…** (to do, in progress, blocked) opens the same kind of menu, "Ask for an explanation
+  in:", with the task's own agent first; the message asks the agent not to start the task but to
+  write a short explanation into its description with `htask edit <id> -d`.
+- A to-do or in-progress task with unfinished dependencies shows a `dim` "after #3" tag; its Run
+  menu starts with a red "Comes after #3, not done yet." line.
 - Every change you make runs `htask --by you ...`. If the task belongs to a live agent: Claude Code
   hears about it from its inbox hook at its next step (a toast says so); any other agent gets a
   `[Herdr task panel] ...` message typed into its terminal with `hc send`, which refuses while the

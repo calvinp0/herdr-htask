@@ -79,6 +79,22 @@ function taskMessage(task) {
     + `\`htask done ${task.id}\` once it's verified, or \`htask block ${task.id} -m "why"\` if you get stuck.`;
 }
 
+// Explain: ask an agent to look into a task and describe it, without starting it.
+function explainMessage(task) {
+  const now = task.description ? ` It currently says: "${task.description}". Keep what's still true.` : "";
+  return `Don't start on htask #${task.id} "${task.title}" yet. Explain it for the human:${now} Look at the repo `
+    + `as needed, then save a short explanation (under 120 words: what it involves, why, which parts of the code, `
+    + `what done looks like, open questions) with \`htask edit ${task.id} -d "<explanation>"\`, and reply with one line.`;
+}
+
+// The two task menus: what they're called, what each destination is called, and what gets sent.
+const MENUS = {
+  run: { title: "Run this task in:", fresh: (a) => `New ${a.name} tab`, send: (addr, who) => `Send to ${addr} (${who})`,
+         message: taskMessage, tab: (task) => task.title.slice(0, 40), sent: "Sent", verb: "Types this task into" },
+  explain: { title: "Ask for an explanation in:", fresh: (a) => `New ${a.name} tab`, send: (addr, who) => `Ask ${addr} (${who})`,
+             message: explainMessage, tab: (task) => `Explain: ${task.title}`.slice(0, 40), sent: "Asked about", verb: "Asks" },
+};
+
 function ago(seconds) {
   const s = Math.max(0, Date.now() / 1000 - seconds);
   if (s < 60) return "just now";
@@ -103,7 +119,7 @@ class Panel {
     // Which sections show; remembered per panel copy. Archived tasks are only fetched while shown.
     this.show = loadShow(); this.archived = [];
     // The Run menu: which to-do it's open for, and the agents installed where this space runs.
-    this.runFor = null; this.known = null;
+    this.menu = null; this.known = null;
     // The Agents section: htask connect status for this space's machine, loaded when opened.
     this.setupOpen = false; this.connections = null;
     // Key commands for this mod, e.g. keys.json "mod:htask" or "global": "htask.toggle-done".
@@ -310,11 +326,12 @@ class Panel {
         .text_color(t.blocked).child("Codex hooks are off: add [features] hooks = true to ~/.codex/config.toml.")));
   }
 
-  // ▸ Run…: start an agent on a to-do. Nothing is routed implicitly: every choice names where the
-  // task goes, a new tab with an agent you pick, or one named agent already running in this repo.
-  toggleRun(task, cx) {
-    this.runFor = this.runFor === task.id ? null : task.id;
-    if (this.runFor !== null) {
+  // ▸ Run… and ? Explain…: a menu under a task. Nothing is routed implicitly: every choice names
+  // where it goes, a new tab with an agent you pick, or one named agent already running in this repo.
+  toggleMenu(task, kind, cx) {
+    const same = this.menu?.id === task.id && this.menu?.kind === kind;
+    this.menu = same ? null : { id: task.id, kind };
+    if (this.menu) {
       const machine = this.machine;
       cx.spawn(async (cx) => {
         try { this.known = { machine, list: (await knownAgents({ on: machine })).filter((a) => a.installed) }; }
@@ -325,26 +342,28 @@ class Panel {
     cx.notify();
   }
 
-  launch(task, agent, cx) {
+  launch(task, agent, kind, cx) {
     try { localStorage.setItem("lastRun", agent.key); } catch { /* not remembered */ }
-    this.runFor = null;
-    run("tab.new", { name: task.title.slice(0, 40), folder: this.project, argv: agent.run, task: taskMessage(task) });
+    this.menu = null;
+    const m = MENUS[kind];
+    run("tab.new", { name: m.tab(task), folder: this.project, argv: agent.run, task: m.message(task) });
     cx.notify();
   }
 
-  sendTo(task, address, cx) {
-    this.runFor = null;
-    const there = { name: "agent.focus", args: { terminal: address } };
+  sendTo(task, address, kind, cx) {
+    this.menu = null;
+    const m = MENUS[kind], there = { name: "agent.focus", args: { terminal: address } };
     cx.spawn(async () => {
-      const r = await hc(["send", address, taskMessage(task)]).catch((e) => ({ code: 1, stderr: String(e?.message ?? e) }));
-      if (r.code === 0) notify({ title: `Sent #${task.id} to ${address}`, body: task.title, level: "info", action: there });
+      const r = await hc(["send", address, m.message(task)]).catch((e) => ({ code: 1, stderr: String(e?.message ?? e) }));
+      if (r.code === 0) notify({ title: `${m.sent} #${task.id} to ${address}`, body: task.title, level: "info", action: there });
       else notify({ title: `Couldn't send to ${address}`, body: (r.stderr || r.stdout || "").trim(), level: "warning", action: there });
     });
     cx.notify();
   }
 
-  runMenu(task, t) {
-    const button = (id, label, enabled, act, tip) => div().id(`run-${task.id}-${id}`).px(7).py(2).rounded(5)
+  taskMenu(task, kind, t) {
+    const m = MENUS[kind];
+    const button = (id, label, enabled, act, tip) => div().id(`${kind}-${task.id}-${id}`).px(7).py(2).rounded(5)
       .text_size(11).bg(t.raised).text_color(enabled ? t.foreground : t.dim)
       .when(enabled, (e) => e.cursor_pointer().hover((s) => s.bg(t.hover)))
       .when(Boolean(tip), (e) => e.tooltip(tip))
@@ -354,29 +373,39 @@ class Panel {
     const known = this.known?.machine === this.machine ? this.known.list : null;
     const fresh = (known ?? []).slice().sort((a, b) => Number(b.key === last) - Number(a.key === last));
     const inRepo = (address) => (panes().find((p) => p.terminal === address)?.cwd ?? "").startsWith(this.project ?? "\0");
-    const running = agents().filter((a) => inRepo(a.address));
+    // The task's own agent first: it knows the task best.
+    const running = agents().filter((a) => inRepo(a.address))
+      .sort((a, b) => Number(b.address === qualify(this.machine, task.pane_id)) - Number(a.address === qualify(this.machine, task.pane_id)));
+    const waiting = kind === "run" ? (task.waiting ?? []) : [];
     return v_flex().pl(22).pt(4).gap(4)
-      .child(div().text_size(10.5).text_color(t.dim).child("Run this task in:"))
+      .when(waiting.length > 0, (e) => e.child(div().text_size(10.5).text_color(t.blocked)
+        .child(`Comes after ${waiting.map((d) => `#${d}`).join(", ")}, not done yet.`)))
+      .child(div().text_size(10.5).text_color(t.dim).child(m.title))
       .child(h_flex().flex_wrap().gap(5)
         .when(known === null, (e) => e.child(div().text_size(11).text_color(t.dim).child("Looking for installed agents…")))
         .when(known !== null && !fresh.length, (e) => e.child(div().text_size(11).text_color(t.dim).child("No installed agents found")))
-        .children(fresh.map((a) => button(`new-${a.key}`, `New ${a.name} tab`, true, (cx) => this.launch(task, a, cx),
-          `Opens a new tab here running ${a.name}, with this task as its first message`)))
-        .children(running.map((a) => button(`send-${a.address}`, `Send to ${a.address} (${a.program?.name ?? a.app ?? "agent"}, ${a.status})`,
-          a.status !== "blocked", (cx) => this.sendTo(task, a.address, cx),
-          a.status === "blocked" ? "It's waiting on a question" : `Types this task into ${a.address}`))));
+        .children(fresh.map((a) => button(`new-${a.key}`, m.fresh(a), true, (cx) => this.launch(task, a, kind, cx),
+          `Opens a new tab here running ${a.name}`)))
+        .children(running.map((a) => button(`send-${a.address}`, m.send(a.address, `${a.program?.name ?? a.app ?? "agent"}, ${a.status}`),
+          a.status !== "blocked", (cx) => this.sendTo(task, a.address, kind, cx),
+          a.status === "blocked" ? "It's waiting on a question" : `${m.verb} ${a.address}`))));
   }
 
   actions(task, t) {
     const button = (id, label, onClick) => div().id(`act-${task.id}-${id}`).px(7).py(2).rounded(5).text_size(11)
       .cursor_pointer().bg(t.raised).text_color(t.foreground).hover((s) => s.bg(t.hover))
       .on_click((_e, cx) => { cx.stop_propagation(); onClick(cx); }).child(label);
+    const open = (kind) => this.menu?.id === task.id && this.menu?.kind === kind;
+    const live = ["todo", "doing", "blocked"].includes(task.status);
     return v_flex()
       .child(h_flex().flex_wrap().pl(22).pt(4).gap(5)
-        .when(task.status === "todo", (e) => e.child(button("run", this.runFor === task.id ? "▾ Run…" : "▸ Run…",
-          (cx) => this.toggleRun(task, cx))))
+        .when(task.status === "todo", (e) => e.child(button("run", open("run") ? "▾ Run…" : "▸ Run…",
+          (cx) => this.toggleMenu(task, "run", cx))))
+        .when(live, (e) => e.child(button("explain", open("explain") ? "▾ Explain…" : "? Explain…",
+          (cx) => this.toggleMenu(task, "explain", cx))))
         .children((ACTIONS[task.status] ?? []).map(([label, cmd]) => button(cmd, label, (cx) => this.change(task, cmd, cx)))))
-      .when(this.runFor === task.id && task.status === "todo", (e) => e.child(this.runMenu(task, t)));
+      .when(open("run") && task.status === "todo", (e) => e.child(this.taskMenu(task, "run", t)))
+      .when(open("explain") && live, (e) => e.child(this.taskMenu(task, "explain", t)));
   }
 
   row(task, t) {
@@ -397,6 +426,10 @@ class Panel {
         .child(div().flex_1().min_w(0).text_color(done || task.status === "dropped" ? t.muted : t.foreground).when(!open, (e) => e.truncate()).child(task.title))
         .when(label, (e) => e.child(div().h(19).flex().items_center().text_size(10).text_color(t.accent).child("this terminal")))
         .when(Boolean(own) && !mine, (e) => e.child(this.ownerTag(task, own, t)))
+        // Waiting on an earlier task (htask add --after / depend): which ones.
+        .when((task.waiting ?? []).length > 0 && (task.status === "todo" || task.status === "doing"), (e) => e.child(
+          div().h(19).flex().flex_none().items_center().text_size(10).text_color(t.dim)
+            .tooltip("Comes after these tasks, which aren't done yet").child(`after ${task.waiting.map((d) => `#${d}`).join(", ")}`)))
         .child(div().h(19).flex().items_center().text_size(10.5).text_color(t.dim).child(`#${task.id}`)))
       .when(Boolean(task.note) && !done, (e) => e.child(detail(`↳ ${task.note}`, task.status === "blocked" ? t.blocked : t.muted)))
       .when(orphaned, (e) => e.child(detail("Nobody is working on this now. Pick it up or move it back to to-do.", t.blocked)))

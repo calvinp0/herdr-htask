@@ -58,6 +58,12 @@ CREATE TABLE IF NOT EXISTS changes (
     detail  TEXT
 );
 -- How far each Claude session has read `changes` (the inbox hook).
+-- Task order: task_id can't really start until depends_on is done (htask add --after, depend).
+CREATE TABLE IF NOT EXISTS deps (
+    task_id    INTEGER NOT NULL,
+    depends_on INTEGER NOT NULL,
+    PRIMARY KEY (task_id, depends_on)
+);
 CREATE TABLE IF NOT EXISTS hook_cursor (
     session     TEXT PRIMARY KEY,
     last_change INTEGER NOT NULL
@@ -238,6 +244,47 @@ def _get_task(conn, task_id: int, project: str) -> sqlite3.Row:
     return row
 
 
+def _ids(values) -> list[int]:
+    """--after 3,4 or --after 3 --after 4 (or a list of ints)."""
+    out = []
+    for v in values or []:
+        out += [int(x) for x in str(v).replace(",", " ").split() if x.strip()]
+    return out
+
+
+def add_deps(conn: sqlite3.Connection, task_id: int, deps: list[int]) -> None:
+    """Record that task_id comes after deps. Refuses unknown tasks, itself, and loops."""
+    for dep in deps:
+        if dep == task_id:
+            raise SystemExit(f"htask: #{task_id} can't come after itself")
+        if conn.execute("SELECT 1 FROM tasks WHERE id = ?", (dep,)).fetchone() is None:
+            raise SystemExit(f"htask: no task #{dep}")
+        # A loop: dep already (indirectly) comes after task_id.
+        seen, todo = set(), [dep]
+        while todo:
+            cur = todo.pop()
+            if cur == task_id:
+                raise SystemExit(f"htask: #{task_id} after #{dep} would make a loop")
+            if cur not in seen:
+                seen.add(cur)
+                todo += [r[0] for r in conn.execute("SELECT depends_on FROM deps WHERE task_id = ?", (cur,))]
+        conn.execute("INSERT OR IGNORE INTO deps (task_id, depends_on) VALUES (?, ?)", (task_id, dep))
+
+
+def deps_of(conn: sqlite3.Connection) -> dict[int, list[tuple[int, str]]]:
+    """task id -> [(dependency id, its status)] for every task with dependencies."""
+    out: dict[int, list[tuple[int, str]]] = {}
+    for r in conn.execute("SELECT d.task_id, d.depends_on, t.status FROM deps d JOIN tasks t ON t.id = d.depends_on"
+                          " ORDER BY d.depends_on"):
+        out.setdefault(r[0], []).append((r[1], r[2]))
+    return out
+
+
+def waiting_on(deps: list[tuple[int, str]]) -> list[int]:
+    """The dependencies that aren't finished (done or dropped both count as out of the way)."""
+    return [d for d, status in deps if status not in ("done", "dropped")]
+
+
 def cmd_add(args) -> None:
     conn, now = connect(), time.time()
     project = _project_from_args(args)
@@ -250,14 +297,20 @@ def cmd_add(args) -> None:
              now if args.status == "done" else None),
         )
         log_change(conn, args, cur.lastrowid, "added")
-    print(f"#{cur.lastrowid} {args.title}")
+        add_deps(conn, cur.lastrowid, _ids(args.after))
+    print(f"#{cur.lastrowid} {args.title}" + (f" (after {', '.join(f'#{d}' for d in _ids(args.after))})" if args.after else ""))
 
 
 def set_status(args, status: str) -> None:
     conn, now = connect(), time.time()
     project = _project_from_args(args)
+    deps = deps_of(conn)
     for task_id in args.ids:
         _get_task(conn, task_id, project)
+        waiting = waiting_on(deps.get(task_id, []))
+        if status == "doing" and waiting:
+            print(f"htask: note: #{task_id} comes after {', '.join(f'#{d}' for d in waiting)}, not done yet",
+                  file=sys.stderr)
         # Any status change brings an archived task back.
         fields = {"status": status, "updated_at": now, "archived_at": None,
                   "completed_at": now if status == "done" else None}
@@ -306,18 +359,47 @@ def cmd_list(args) -> None:
     project = _project_from_args(args)
     rows = [r for r in fetch_tasks(conn, project, archived=args.archived)
             if args.all or args.archived or r["status"] not in ("done", "dropped")]
+    deps = deps_of(conn)
     if args.json:
-        print(json.dumps({"project": project, "tasks": [dict(r) for r in rows]}, indent=2))
+        tasks = [{**dict(r), "after": [d for d, _ in deps.get(r["id"], [])],
+                  "waiting": waiting_on(deps.get(r["id"], []))} for r in rows]
+        print(json.dumps({"project": project, "tasks": tasks}, indent=2))
         return
     if not rows:
         print(f"no open tasks in {project}" + ("" if args.all else " (use --all for done)"))
         return
     for r in rows:
-        print(f"#{r['id']:<4} [{r['status']:<7}] {r['title']}")
+        waiting = waiting_on(deps.get(r["id"], []))
+        after = f"  (after {', '.join(f'#{d}' for d in waiting)})" if waiting and r["status"] != "done" else ""
+        print(f"#{r['id']:<4} [{r['status']:<7}] {r['title']}{after}")
         if r["description"]:
             print(textwrap.indent(r["description"], " " * 16))
         if r["note"]:
             print(textwrap.indent("note: " + r["note"], " " * 16))
+
+
+def cmd_depend(args) -> None:
+    conn, project = connect(), _project_from_args(args)
+    _get_task(conn, args.id, project)
+    with writing(conn, project):
+        if args.clear:
+            conn.execute("DELETE FROM deps WHERE task_id = ?", (args.id,))
+        add_deps(conn, args.id, _ids(args.on))
+    deps = [d for d, _ in deps_of(conn).get(args.id, [])]
+    print(f"#{args.id} comes after " + (", ".join(f"#{d}" for d in deps) if deps else "nothing"))
+
+
+def cmd_next(args) -> None:
+    """The first to-do in this repo that isn't waiting on anything: what to pick up next."""
+    conn, project = connect(), _project_from_args(args)
+    deps = deps_of(conn)
+    for r in fetch_tasks(conn, project):
+        if r["status"] == "todo" and not waiting_on(deps.get(r["id"], [])):
+            print(f"#{r['id']} {r['title']}")
+            if r["description"]:
+                print(textwrap.indent(r["description"], "    "))
+            return
+    print("nothing ready")
 
 
 def cmd_summary(args) -> None:
@@ -468,8 +550,13 @@ one of two ways, depending on your tools:
   looks like>"` for each step, `htask start <id>` before working on one, `htask done <id>` after
   verifying it.
 
+After a plan is approved in plan mode, record its steps the same way, in order.
+
 Either way, use the `htask` CLI for (ids come from `htask list`):
-- `htask list` at the start, to pick up open tasks earlier sessions left in this repo.
+- `htask list` at the start, to pick up open tasks earlier sessions left in this repo
+  (`htask next` names the first one that isn't waiting on another).
+- `htask depend <id> --on <earlier id>` when a step can't start before another is done
+  (or `htask add ... --after <id>`).
 - `htask note <id> "<progress, findings, next step>"` to leave information for the human.
 - `htask block <id> -m "<what you need>"` when you are waiting on the user or something
   external. This notifies the human.
@@ -481,7 +568,9 @@ For any task with more than one step, record the plan with `htask` so it shows i
 the Herdr task panel. Tasks are scoped to the current git repo.
 
 - `htask list` to see open tasks first, so you pick up existing work instead of duplicating it.
-- `htask add "<short title>" -d "<what done looks like>"` for each step.
+- `htask add "<short title>" -d "<what done looks like>"` for each step, in order; add
+  `--after <id>` when a step can't start before an earlier one is done. `htask next` names the
+  first step that isn't waiting.
 - `htask start <id>` before working on a step, `htask done <id>` after verifying it.
 - `htask note <id> "<progress, findings, next step>"` to leave information for the human.
 - `htask block <id> -m "<what you need>"` when you are waiting on the user or something external. This notifies the human.
@@ -500,7 +589,10 @@ The Herdr task panel shows your plan. For any task with more than one step:
   <id>` after verifying it.
 
 Either way, use the `htask` CLI for (ids come from `htask list`):
-- `htask list` at the start, to pick up open tasks earlier sessions left in this repo.
+- `htask list` at the start, to pick up open tasks earlier sessions left in this repo
+  (`htask next` names the first one that isn't waiting on another).
+- `htask depend <id> --on <earlier id>` when a step can't start before another is done
+  (or `htask add ... --after <id>`).
 - `htask note <id> "<progress, findings, next step>"` to leave information for the human.
 - `htask block <id> -m "<what you need>"` when you are waiting on the user or something external. This notifies the human.
 - A message starting with `[Herdr task panel]` means the human changed one of your tasks: follow it, and update your plan to match so your next update doesn't undo it.
@@ -518,7 +610,7 @@ def agent_hooks(key: str) -> tuple[Path, list[tuple[str, str | None, str, str]]]
     home, bin_dir = Path.home(), Path.home() / ".local" / "bin"
     if key == "claude":
         return home / ".claude" / "settings.json", [
-            ("PostToolUse", "TaskCreate|TaskUpdate|TodoWrite", f"{bin_dir / 'htask'} hook claude", "mirror"),
+            ("PostToolUse", "TaskCreate|TaskUpdate|TodoWrite|ExitPlanMode", f"{bin_dir / 'htask'} hook claude", "mirror"),
             ("PostToolUse", "*", str(bin_dir / "htask-claude-inbox"), "inbox"),
             ("UserPromptSubmit", None, str(bin_dir / "htask-claude-inbox"), "inbox"),
         ]
@@ -573,11 +665,14 @@ def _apply_hooks(path: Path, specs, remove: bool) -> str | None:
     else:
         for event, matcher, command, kind in specs:
             entries = hooks.setdefault(event, [])
-            match = None
+            match, match_entry = None, None
             for e in entries:
                 for h in e.get("hooks", []):
                     if _hook_kind(h.get("command", "")) == kind and (e.get("matcher") == matcher or kind == "mirror"):
-                        match = h
+                        match, match_entry = h, e
+            if match is not None and kind == "mirror" and matcher is not None and match_entry.get("matcher") != matcher:
+                match_entry["matcher"] = matcher  # an older htask's matcher: catch the tools added since
+                changed = True
             if match is None:
                 entry = {"hooks": [{"type": "command", "command": command, "timeout": 10}]}
                 if matcher is not None:
@@ -714,13 +809,15 @@ def cmd_connect(args) -> None:
             print(f"{s['name']:<12} {state}")
         return
     targets = [k for k, s in connect_status().items() if s["available"]] if args.target == "all" else [args.target]
+    codex_hook_changed = False
     for key in targets:
         done = connect_agent(key, remove=args.remove)
         name = CONNECT_AGENTS[key][0]
+        codex_hook_changed |= key == "codex" and any("hooks" in d for d in done)
         print(f"{name}: " + ("; ".join(done) if done else ("nothing to remove" if args.remove else "already connected")))
     if not args.remove:
         print("Agents started from now on pick it up; running ones keep their old setup until restarted.")
-        if "codex" in targets:
+        if codex_hook_changed:
             print("Codex asks you to approve a new hook the next time it starts.")
 
 
@@ -797,14 +894,48 @@ def sync_claude(event: dict, conn: sqlite3.Connection) -> int:
     upsert = _mirror(conn, project, "claude", origin_id(), now)
 
     prefix = f"claude:{session}:"
+
+    def link_deps(claude_id) -> None:
+        """Claude's own 'blocked by' ids, if its task tool sent any, as htask dependencies."""
+        wanted = [str(x) for k in ("addBlockedBy", "blockedBy") for x in (inp.get(k) or [])]
+        if not wanted:
+            return
+        mine = conn.execute("SELECT id FROM tasks WHERE external_id = ?", (prefix + str(claude_id),)).fetchone()
+        for other in wanted:
+            dep = conn.execute("SELECT id FROM tasks WHERE external_id = ?", (prefix + other,)).fetchone()
+            if mine and dep:
+                try:
+                    add_deps(conn, mine["id"], [dep["id"]])
+                except SystemExit:
+                    pass  # a loop or a missing task: leave it out rather than fail the hook
+
     if tool == "TaskCreate":
         task_id = (resp.get("task") or {}).get("id") if isinstance(resp, dict) else None
         if task_id is None:
             return 0
-        return upsert(prefix + str(task_id), inp.get("subject") or "(untitled)", inp.get("description"), "todo")
+        n = upsert(prefix + str(task_id), inp.get("subject") or "(untitled)", inp.get("description"), "todo")
+        link_deps(task_id)
+        return n
     if tool == "TaskUpdate" and inp.get("taskId") is not None:
-        return upsert(prefix + str(inp["taskId"]), inp.get("subject"), inp.get("description"),
-                      CLAUDE_STATUS.get(inp.get("status")))
+        n = upsert(prefix + str(inp["taskId"]), inp.get("subject"), inp.get("description"),
+                   CLAUDE_STATUS.get(inp.get("status")))
+        link_deps(inp["taskId"])
+        return n
+    if tool == "ExitPlanMode" and (inp.get("plan") or "").strip():
+        # PostToolUse runs only when the tool succeeded, that is, when the plan was approved.
+        # One task for the plan; its steps come from the task tool or htask, in order.
+        import hashlib
+        plan = inp["plan"].strip()
+        lines = plan.splitlines()
+        title = next((l.lstrip("#").strip() for l in lines if l.strip()), "Plan")
+        if not title.lower().startswith("plan"):
+            title = f"Plan: {title}"
+        body = " ".join(l.strip().lstrip("#").strip() for l in lines[1:] if l.strip())
+        description = (body[:400] + ("…" if len(body) > 400 else ""))
+        if inp.get("planFilePath"):
+            description += f"\nPlan file: {inp['planFilePath']}"
+        key = prefix + "plan:" + hashlib.sha1(plan.encode()).hexdigest()[:12]
+        return upsert(key, title[:120], description, "doing")
     if tool == "TodoWrite":
         steps = [(t["content"], CLAUDE_STATUS.get(t.get("status"), "todo"))
                  for t in inp.get("todos") or [] if t.get("content")]
@@ -1170,6 +1301,7 @@ def main(argv=None) -> None:
     a.add_argument("-d", "--description")
     a.add_argument("--status", choices=STATUSES, default="todo")
     a.add_argument("--agent", help="who added it (default: detected from the environment)")
+    a.add_argument("--after", action="append", metavar="IDS", help="task(s) this one comes after: 3 or 3,4")
     a.set_defaults(fn=cmd_add)
 
     for name, status, helptext in (
@@ -1194,6 +1326,14 @@ def main(argv=None) -> None:
     e.add_argument("--title")
     e.add_argument("-d", "--description")
     e.set_defaults(fn=cmd_edit)
+
+    dp = sub.add_parser("depend", help="set what a task comes after")
+    dp.add_argument("id", type=int)
+    dp.add_argument("--on", action="append", metavar="IDS", help="task(s) it comes after: 3 or 3,4")
+    dp.add_argument("--clear", action="store_true", help="remove its dependencies first")
+    dp.set_defaults(fn=cmd_depend)
+
+    sub.add_parser("next", help="the first to-do that isn't waiting on another task").set_defaults(fn=cmd_next)
 
     ls = sub.add_parser("list", help="list this project's open tasks")
     ls.add_argument("--all", action="store_true", help="include done/dropped")
