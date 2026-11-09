@@ -312,6 +312,44 @@ class Panel {
     return out;
   }
 
+  // The task number: a small badge in the terminal font, so it reads as an id, not as text.
+  idBadge(id, t) {
+    return div().flex_none().h(18).px(5).flex().items_center().rounded(5).bg(t.raised)
+      .font_family(settings()?.font_family ?? "JetBrains Mono").text_size(10).text_color(t.muted).child(`#${id}`);
+  }
+
+  // Links to other tasks, under the title: where this one came from, what it waits for, and (closed:
+  // a count; open: each one) its follow-ups. Each is a chip; clicking one opens that task.
+  hasLinks(task, open) {
+    const waiting = (task.waiting ?? []).length > 0 && (task.status === "todo" || task.status === "doing");
+    return Boolean(task.from_id) || waiting || (task.followups ?? []).length > 0 || false;
+  }
+
+  links(task, open, t) {
+    const chip = (key, id, lead, tone) => {
+      const title = this.titleOf(id);
+      return h_flex().id(`link-${task.id}-${key}-${id}`).flex_none().max_w(260).gap(5).px(6).h(20).items_center()
+        .rounded(6).border_1().border_color(tone ? tone + "66" : t.border).bg(tone ? tone + "14" : t.background)
+        .text_size(10.5).cursor_pointer().hover((s) => s.bg(t.hover)).tooltip(title ? `Open #${id}: ${title}` : `#${id}`)
+        .on_click((_e, cx) => { cx.stop_propagation(); this.open.add(id); cx.notify(); })
+        .child(div().flex_none().text_color(tone ?? t.dim).child(lead))
+        .child(div().flex_none().font_family(settings()?.font_family ?? "JetBrains Mono").text_color(tone ?? t.muted).child(`#${id}`))
+        .when(Boolean(title), (e) => e.child(div().min_w(0).truncate().text_color(t.muted).child(title)));
+    };
+    const waiting = (task.status === "todo" || task.status === "doing") ? (task.waiting ?? []) : [];
+    const followups = task.followups ?? [];
+    // Came from the very task it waits for: one chip, not two pointing at the same place.
+    const fromWaited = Boolean(task.from_id) && waiting.includes(task.from_id);
+    return h_flex().flex_wrap().gap(5).pl(22).pt(2)
+      .when(Boolean(task.from_id) && !fromWaited, (e) => e.child(chip("from", task.from_id, "↳ from", null)))
+      .children(waiting.map((id) => chip("after", id, id === task.from_id ? "↳ from · waits for" : "waits for", t.blocked)))
+      .when(followups.length > 0 && !open, (e) => e.child(div().id(`followups-${task.id}`).flex_none().h(20).px(6).flex()
+        .items_center().rounded(6).text_size(10.5).text_color(t.dim).cursor_pointer().hover((s) => s.bg(t.hover))
+        .tooltip("Show them").on_click((_e, cx) => { cx.stop_propagation(); this.open.add(task.id); cx.notify(); })
+        .child(`${followups.length} follow-up${followups.length > 1 ? "s" : ""} ›`)))
+      .when(open, (e) => e.children(followups.map((id) => chip("followup", id, "follow-up", null))));
+  }
+
   // A task's title by id, from what's loaded (this repo, or every repo in All; archived ones too).
   titleOf(id) {
     return (this.tasks.find((x) => x.id === id) ?? this.archived.find((x) => x.id === id))?.title ?? null;
@@ -623,25 +661,15 @@ class Panel {
         .child(div().flex_1().min_w(0).text_color(done || task.status === "dropped" ? t.muted : t.foreground).when(!open, (e) => e.truncate()).child(task.title))
         .when(label, (e) => e.child(div().h(19).flex().items_center().text_size(10).text_color(t.accent).child("this terminal")))
         .when(Boolean(own) && !mine, (e) => e.child(this.ownerTag(task, own, t)))
-        // Waiting on an earlier task (htask add --after / depend): which ones.
-        .when((task.waiting ?? []).length > 0 && (task.status === "todo" || task.status === "doing"), (e) => e.child(
-          div().h(19).flex().flex_none().items_center().text_size(10).text_color(t.dim)
-            .tooltip("Comes after these tasks, which aren't done yet").child(`after ${task.waiting.map((d) => `#${d}`).join(", ")}`)))
-        // Where it came from (htask add --from): a follow-up of an earlier task.
-        .when(Boolean(task.from_id), (e) => e.child(div().h(19).flex().flex_none().items_center().text_size(10)
-          .text_color(t.dim).tooltip(this.titleOf(task.from_id) ?? `#${task.from_id}`).child(`from #${task.from_id}`)))
         // In All, which repo the task belongs to.
         .when(this.show.all && Boolean(task.project), (e) => e.child(div().h(19).flex().flex_none().items_center()
           .max_w(110).text_size(10).text_color(task.project === this.project ? t.accent : t.dim).truncate()
           .child(task.project.split("/").pop())))
-        .child(div().h(19).flex().items_center().text_size(10.5).text_color(t.dim).child(`#${task.id}`)))
+        .child(this.idBadge(task.id, t)))
+      .when(this.hasLinks(task, open), (e) => e.child(this.links(task, open, t)))
       .when(Boolean(task.note) && !done, (e) => e.child(detail(`↳ ${task.note}`, task.status === "blocked" ? t.blocked : t.muted)))
       .when(orphaned, (e) => e.child(detail("Nobody is working on this now. Pick it up or move it back to to-do.", t.blocked)))
       .when(open && Boolean(task.description), (e) => e.child(detail(task.description, t.muted)))
-      .when(open && Boolean(task.from_id), (e) => e.child(detail(
-        `From #${task.from_id}${this.titleOf(task.from_id) ? ` ${this.titleOf(task.from_id)}` : ""}`, t.dim)))
-      .when(open && (task.followups ?? []).length > 0, (e) => e.child(detail(
-        `Follow-ups: ${task.followups.map((id) => `#${id}${this.titleOf(id) ? ` ${this.titleOf(id)}` : ""}`).join(", ")}`, t.dim)))
       .when(open, (e) => e.child(detail(
         [task.agent, task.pane_id, `updated ${ago(task.updated_at)}`].filter(Boolean).join(" · "), t.dim)))
       .when(open, (e) => e.child(this.actions(task, t)));

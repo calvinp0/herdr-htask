@@ -84,10 +84,14 @@ the agent that owns the task.
   with the task's own agent first. The message asks the agent to explain the task in its own
   conversation, as deep as needed, without starting it, to expect follow-ups, and at the end to save a
   short summary with `htask edit <id> -d`. Asking a running agent also focuses it (`agent.focus`).
-- A task that came out of another (`htask add --from 31`) shows a `dim` "from #31" tag (tooltip:
-  that task's title); opened, it lists "From #31 …" and "Follow-ups: #44 …". Run and Explain
-  messages mention it.
-- A to-do or in-progress task with unfinished dependencies shows a `dim` "after #3" tag; its Run
+- The task number is a badge at the right: 18px high, `raised`, 5px radius, the terminal font at 10px
+  in `muted`.
+- Links to other tasks sit under the title as chips (20px, 6px radius, 1px outline; clicking one opens
+  that task, its title is the tooltip): "↳ from #31 <title>" (`border` outline); "waits for #3
+  <title>" while #3 isn't done (`blocked` text, outline and a faint `blocked` fill); one "↳ from ·
+  waits for #3 …" chip when both point at the same task; "N follow-ups ›" on the original (opens it),
+  which, opened, lists each follow-up as a chip. Run and Explain messages mention where a task came from.
+- For a to-do or in-progress task with unfinished dependencies, its Run
   menu starts with a red "Comes after #3, not done yet." line, its Done button reads **Done anyway**
   (`htask done <id> --force`), and clicking its status mark does nothing (the tooltip says why).
 - Opened outside the layout (as a pane or window), the panel shows a banner: "Only in this tab…"
