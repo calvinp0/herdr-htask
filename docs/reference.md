@@ -10,7 +10,7 @@ htask note <id> "text"
 htask edit <id> [--title ...] [-d ...]
 htask depend <id> --on 3 [--clear]        # this task comes after #3
 htask next                                # the first to-do that isn't waiting on another
-htask list [--all] [--archived] [--json]
+htask list [--all] [--archived] [--everywhere] [--json]   # --everywhere: every repo
 htask archive <id>...                     # archive done/dropped tasks now
 htask clean [--days 7] [--everywhere] [--dry-run]   # archive old done/dropped tasks
 htask summary                             # JSON: counts here + blocked tasks everywhere
@@ -56,6 +56,7 @@ If htask can't run, the status chip shows a red `htask ✗`.
 Bind these in `~/.config/herdr-app/keys.json`, for example `"global": { "ctrl-alt-t": "htask.toggle-todo" }`:
 
 - `htask.toggle-todo`, `htask.toggle-done`, `htask.toggle-dropped`, `htask.toggle-archived`
+- `htask.toggle-all` (this repo / every repo)
 - `htask.dock` (Add to my layout)
 
 ## Remote spaces

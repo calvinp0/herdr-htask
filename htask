@@ -362,8 +362,12 @@ def cmd_edit(args) -> None:
 def cmd_list(args) -> None:
     conn = connect()
     project = _project_from_args(args)
-    rows = [r for r in fetch_tasks(conn, project, archived=args.archived)
-            if args.all or args.archived or r["status"] not in ("done", "dropped")]
+    if args.everywhere:  # every repo on this machine, grouped by repo
+        rows = conn.execute(
+            f"SELECT * FROM tasks WHERE archived_at IS {'NOT ' if args.archived else ''}NULL ORDER BY project, id").fetchall()
+    else:
+        rows = fetch_tasks(conn, project, archived=args.archived)
+    rows = [r for r in rows if args.all or args.archived or r["status"] not in ("done", "dropped")]
     deps = deps_of(conn)
     if args.json:
         tasks = [{**dict(r), "after": [d for d, _ in deps.get(r["id"], [])],
@@ -371,9 +375,13 @@ def cmd_list(args) -> None:
         print(json.dumps({"project": project, "tasks": tasks}, indent=2))
         return
     if not rows:
-        print(f"no open tasks in {project}" + ("" if args.all else " (use --all for done)"))
+        print(f"no open tasks in {'any repo' if args.everywhere else project}" + ("" if args.all else " (use --all for done)"))
         return
+    shown = None
     for r in rows:
+        if args.everywhere and r["project"] != shown:
+            shown = r["project"]
+            print(f"{'' if r is rows[0] else chr(10)}== {os.path.basename(shown) or shown}  ({shown})")
         waiting = waiting_on(deps.get(r["id"], []))
         after = f"  (after {', '.join(f'#{d}' for d in waiting)})" if waiting and r["status"] != "done" else ""
         print(f"#{r['id']:<4} [{r['status']:<7}] {r['title']}{after}")
@@ -1362,6 +1370,7 @@ def main(argv=None) -> None:
     ls.add_argument("--all", action="store_true", help="include done/dropped")
     ls.add_argument("--json", action="store_true")
     ls.add_argument("--archived", action="store_true", help="only tasks put away by `htask clean`")
+    ls.add_argument("--everywhere", action="store_true", help="every repo's tasks, not just this one's")
     ls.set_defaults(fn=cmd_list)
 
     ar = sub.add_parser("archive", help="archive done or dropped tasks now")

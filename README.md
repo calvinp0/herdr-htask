@@ -5,6 +5,9 @@
 A side panel for [Herdr](https://herdr.dev) that shows what your coding agents have done, what
 they're doing, what's blocked and what's left. It follows the terminal you focus and updates live.
 
+It tracks the agents' own plans as they work, rather than a to-do list of what you ask for (for
+that, see mods like Over9k To-do).
+
 <p align="center">
   <img src="preview.png" width="420" alt="The Tasks panel in the Herdr desktop app: To do, Done, Dropped and Archived filter chips, a blocked task with its reason, a task in progress, three to-do tasks, the five most recent done tasks with Show 5 more, and four archived ones, with a Tasks 10/15 button and a red dot in the tab bar">
 </p>
@@ -66,6 +69,7 @@ Then open a space on the SSH machine and do the two steps above.
 - **? Explain…** opens a conversation with an agent about a task, without starting it.
 - **Live state:** in-progress tasks show their agent's state (`t6 working`). Click it to jump there.
 - **Order:** a task can come after another (`htask add … --after 3`). It shows `after #3` until #3 is done.
+- **This repo / All** switches between the focused repo and every repo on the machine.
 - **Chips** show or hide To do, Done, Dropped and Archived.
 - **Archive** puts away done tasks; reopen one to bring it back.
 - **Blocked tasks** raise a toast.

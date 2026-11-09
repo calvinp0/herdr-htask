@@ -18,10 +18,12 @@ const DONE_SHOWN = 5;
 // are skipped. Blocked comes first because it needs you. Within each open section, the focused
 // terminal's tasks come first, then the rest of the repo's in id order (sort is stable). Done shows
 // the newest few until show.allDone; Dropped shows only with its chip on.
-export function sections(tasks, terminal, show, machine) {
+export function sections(tasks, terminal, show, machine, here = null) {
   const mine = (task) => Boolean(terminal) && qualify(machine, task.pane_id) === terminal;
+  // In All: the focused repo's tasks first, then the other repos', grouped by repo.
+  const repoRank = (task) => (task.project === here ? "" : task.project ?? "");
   const by = (status) => tasks.filter((task) => task.status === status)
-    .sort((a, b) => Number(mine(b)) - Number(mine(a)));
+    .sort((a, b) => Number(mine(b)) - Number(mine(a)) || repoRank(a).localeCompare(repoRank(b)));
   const out = [["Blocked", by("blocked"), 0], ["In progress", by("doing"), 0]];
   if (show.todo) out.push(["To do", by("todo"), 0]);
   if (show.done) {
@@ -109,7 +111,7 @@ function ago(seconds) {
 
 // The filter chips under the progress bar, in order. Blocked and In progress always show.
 const FILTERS = [["todo", "To do"], ["done", "Done"], ["dropped", "Dropped"], ["archived", "Archived"]];
-const DEFAULT_SHOW = { todo: true, done: true, dropped: false, archived: false, allDone: false };
+const DEFAULT_SHOW = { todo: true, done: true, dropped: false, archived: false, allDone: false, all: false };
 
 function loadShow() {
   try { return { ...DEFAULT_SHOW, ...JSON.parse(localStorage.getItem("show") ?? "{}") }; }
@@ -130,7 +132,7 @@ class Panel {
     cx.spawn(async (cx) => {
       for (;;) {
         const c = await nextCommand();
-        const name = /^toggle-(todo|done|dropped|archived)$/.exec(c)?.[1];
+        const name = /^toggle-(todo|done|dropped|archived|all)$/.exec(c)?.[1];
         if (name) this.flip(name, cx);
         if (c === "dock") this.dock(cx);
       }
@@ -153,13 +155,14 @@ class Panel {
     this.loading = true;
     cx.spawn(async (cx) => {
       try {
-        const r = await htask(machine, ["--project", cwd, "list", "--all", "--json"]);
+        const scope = this.show.all ? ["--everywhere"] : [];
+        const r = await htask(machine, ["--project", cwd, "list", "--all", "--json", ...scope]);
         if (cwd !== this.cwd || machine !== this.machine) return;
         if (r.code !== 0) throw new Error(htaskError(machine, r));
         const data = JSON.parse(r.stdout);
         let archived = [];
         if (this.show.archived) {
-          const a = await htask(machine, ["--project", cwd, "list", "--archived", "--json"]);
+          const a = await htask(machine, ["--project", cwd, "list", "--archived", "--json", ...scope]);
           if (a.code !== 0) throw new Error(htaskError(machine, a));
           archived = JSON.parse(a.stdout).tasks.sort((x, y) => (y.archived_at ?? 0) - (x.archived_at ?? 0));
         }
@@ -175,10 +178,11 @@ class Panel {
     });
   }
 
-  // Run an htask command on this project, as you (--by you: Claude's inbox hook passes your
-  // changes on). The signal watch reloads the list afterwards. `then` runs once it succeeded.
-  htask(args, cx, then) {
-    const project = this.project, machine = this.machine;
+  // Run an htask command on a project (default: the focused one), as you (--by you: Claude's inbox
+  // hook passes your changes on). The signal watch reloads the list afterwards. `then` runs once it
+  // succeeded. In All, a task's commands go to its own repo.
+  htask(args, cx, then, project = this.project) {
+    const machine = this.machine;
     if (!project) return;
     this.note = null;
     cx.spawn(async (cx) => {
@@ -197,7 +201,7 @@ class Panel {
   // Change a task's status, then tell the agent working on it, if one still is.
   change(task, cmd, cx, extra = []) {
     const own = owner(task, this.machine);
-    this.htask([cmd, String(task.id), ...extra], cx, (cx) => this.tell(task, cmd, own, cx));
+    this.htask([cmd, String(task.id), ...extra], cx, (cx) => this.tell(task, cmd, own, cx), task.project ?? this.project);
   }
 
   // Claude sessions hear about it from the inbox hook on their next step, without a new turn.
@@ -236,7 +240,7 @@ class Panel {
   flip(name, cx) {
     this.show = { ...this.show, [name]: !this.show[name] };
     try { localStorage.setItem("show", JSON.stringify(this.show)); } catch { /* not remembered */ }
-    if (name === "archived") { this.archived = []; this.refresh(cx); }
+    if (name === "archived" || name === "all") { this.archived = []; this.refresh(cx); }
     cx.notify();
   }
 
@@ -402,7 +406,7 @@ class Panel {
     try { localStorage.setItem("lastRun", agent.key); } catch { /* not remembered */ }
     this.menu = null;
     const m = MENUS[kind];
-    run("tab.new", { name: m.tab(task), folder: this.project, argv: agent.run, task: m.message(task) });
+    run("tab.new", { name: m.tab(task), folder: task.project ?? this.project, argv: agent.run, task: m.message(task) });
     cx.notify();
   }
 
@@ -432,7 +436,8 @@ class Panel {
     try { last = localStorage.getItem("lastRun"); } catch { /* none */ }
     const known = this.known?.machine === this.machine ? this.known.list : null;
     const fresh = (known ?? []).slice().sort((a, b) => Number(b.key === last) - Number(a.key === last));
-    const inRepo = (address) => (panes().find((p) => p.terminal === address)?.cwd ?? "").startsWith(this.project ?? "\0");
+    const repo = task.project ?? this.project ?? "\0";
+    const inRepo = (address) => (panes().find((p) => p.terminal === address)?.cwd ?? "").startsWith(repo);
     // The task's own agent first: it knows the task best.
     const running = agents().filter((a) => inRepo(a.address))
       .sort((a, b) => Number(b.address === qualify(this.machine, task.pane_id)) - Number(a.address === qualify(this.machine, task.pane_id)));
@@ -494,6 +499,10 @@ class Panel {
         .when((task.waiting ?? []).length > 0 && (task.status === "todo" || task.status === "doing"), (e) => e.child(
           div().h(19).flex().flex_none().items_center().text_size(10).text_color(t.dim)
             .tooltip("Comes after these tasks, which aren't done yet").child(`after ${task.waiting.map((d) => `#${d}`).join(", ")}`)))
+        // In All, which repo the task belongs to.
+        .when(this.show.all && Boolean(task.project), (e) => e.child(div().h(19).flex().flex_none().items_center()
+          .max_w(110).text_size(10).text_color(task.project === this.project ? t.accent : t.dim).truncate()
+          .child(task.project.split("/").pop())))
         .child(div().h(19).flex().items_center().text_size(10.5).text_color(t.dim).child(`#${task.id}`)))
       .when(Boolean(task.note) && !done, (e) => e.child(detail(`↳ ${task.note}`, task.status === "blocked" ? t.blocked : t.muted)))
       .when(orphaned, (e) => e.child(detail("Nobody is working on this now. Pick it up or move it back to to-do.", t.blocked)))
@@ -518,16 +527,18 @@ class Panel {
     // runs past its track by the zoom factor.
     const zoom = Number(settings()?.zoom) || 1;
     const barWidth = Math.max(0, this.width / zoom - 28);
-    const name = this.project ? this.project.split("/").pop() : "";
+    const repoName = this.project ? this.project.split("/").pop() : "";
+    const name = this.show.all ? "All repos" : repoName;
     const owners = new Set(this.tasks.filter((task) => task.status !== "done" && task.status !== "dropped" && task.pane_id)
       .map((task) => task.pane_id));
     this.mixed = owners.size > 1;
-    const shown = sections(this.tasks, this.terminal, this.show, this.machine).filter(([, rows]) => rows.length);
+    const shown = sections(this.tasks, this.terminal, this.show, this.machine, this.project).filter(([, rows]) => rows.length);
     if (this.show.archived && this.archived.length) shown.push(["Archived", this.archived, 0]);
 
     const empty = this.error ? this.error
       : !this.cwd ? "Focus a terminal to see its repo's tasks."
       : this.loading && !this.project ? "Loading tasks…"
+      : this.show.all ? "No tasks in any repo yet. Agents add them with:"
       : `No tasks in ${name} yet. Add one below, or agents add them with:`;
 
     return v_flex().id("htask").size_full().min_h(0).rounded(10).overflow_hidden().bg(t.background)
@@ -542,7 +553,7 @@ class Panel {
           .text_color(this.setupOpen ? t.foreground : t.muted).bg(this.setupOpen ? t.raised : t.background)
           .hover((s) => s.bg(t.hover)).tooltip("Connect Claude Code, Codex and Pi to htask")
           .on_click((_e, cx) => this.toggleSetup(cx)).child("Agents"))
-        .when(done > 0, (e) => e.child(div().id("htask-archive").px(6).py(2).rounded(5).text_size(11).cursor_pointer()
+        .when(done > 0 && !this.show.all, (e) => e.child(div().id("htask-archive").px(6).py(2).rounded(5).text_size(11).cursor_pointer()
           .text_color(t.muted).hover((s) => s.bg(t.hover)).tooltip("Archive this repo's done tasks (htask clean --days 0)")
           .on_click((_e, cx) => this.htask(["clean", "--days", "0"], cx)).child("Archive")))
         // Opened as a window (a layout with no panel block): a close button. Stopping the press
@@ -554,7 +565,16 @@ class Panel {
         )
       .child(div().mx(14).h(3).flex_none().rounded(2).bg(t.border)
         .child(div().h_full().rounded(2).bg(t.done).w(counted.length ? barWidth * done / counted.length : 0)))
-      .child(h_flex().flex_none().px(14).pt(10).gap(6).items_center()
+      .child(h_flex().flex_none().flex_wrap().px(14).pt(10).gap(6).items_center()
+        // Scope: this repo, or every repo on the machine. Remembered with the chips.
+        .child(h_flex().flex_none().rounded(10).border_1().border_color(t.border).overflow_hidden()
+          .children([[false, repoName || "This repo"], [true, "All"]].map(([all, label]) => {
+            const on = Boolean(this.show.all) === all;
+            return div().id(`scope-${all ? "all" : "repo"}`).px(9).py(2).text_size(11).cursor_pointer().max_w(120).truncate()
+              .bg(on ? t.raised : t.background).text_color(on ? t.foreground : t.dim).hover((st) => st.bg(t.hover))
+              .tooltip(all ? "Every repo's tasks on this machine" : "Only the focused terminal's repo")
+              .on_click((_e, cx) => { if (!on) this.flip("all", cx); }).child(label);
+          })))
         .children(FILTERS.map(([name, label]) => {
           const on = this.show[name];
           return div().id(`show-${name}`).px(9).py(2).rounded(10).text_size(11).cursor_pointer().border_1()

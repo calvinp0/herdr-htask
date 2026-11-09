@@ -26,6 +26,10 @@ the agent that owns the task.
   - Header, 42px: **Tasks**, the repo name in a small bordered tag, `done/total` in `muted` at 11px,
     and an **Archive** text button when there are done tasks. Opened as a window, a `×` at the right.
   - A 3px progress bar, `border` track with a `done`-colored fill, 14px side margins.
+  - A scope switch before the chips: the repo's name | **All**, the chosen one on `raised`. All
+    lists every repo's tasks (`htask list --everywhere`), each row tagged with its repo (`accent` for
+    the focused one), the focused repo first; commands, Run and Explain use the task's own repo;
+    the header says "All repos" and Archive is hidden.
   - Filter chips, 11px, fully rounded: **To do**, **Done**, **Dropped**, **Archived** (the last two
     off by default). On: `raised` background,
     `foreground` text, `border` outline. Off: transparent, `dim` text.

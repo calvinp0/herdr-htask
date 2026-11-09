@@ -88,6 +88,16 @@ class HtaskCLI(Base):
         self.run_htask("--by", "you", "start", "1")
         self.assertEqual(self.tasks()[0]["pane_id"], "w1:p1")
 
+    def test_list_everywhere(self):
+        self.run_htask("add", "in a")
+        self.run_htask("add", "in b", cwd=self.repo_b)
+        out = json.loads(self.run_htask("list", "--everywhere", "--json").stdout)["tasks"]
+        self.assertEqual(sorted((os.path.basename(t["project"]), t["title"]) for t in out), [("a", "in a"), ("b", "in b")])
+        text = self.run_htask("list", "--everywhere").stdout
+        self.assertIn("== a  (", text)
+        self.assertIn("== b  (", text)
+        self.assertEqual(len(json.loads(self.run_htask("list", "--json").stdout)["tasks"]), 1)  # still just this repo
+
     def test_list_hides_done_by_default(self):
         self.run_htask("add", "open")
         self.run_htask("add", "closed", "--status", "done")
