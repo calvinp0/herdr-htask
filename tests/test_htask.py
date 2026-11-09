@@ -261,5 +261,27 @@ class ClaudeInbox(Base):
         self.assertIn('note on htask #1 "Parse output" (your task 2): "use the 6.1 files"', text)
 
 
+class Order(unittest.TestCase):
+    def setUp(self):
+        from importlib.machinery import SourceFileLoader
+        self.htask = SourceFileLoader("htask_module", str(HTASK)).load_module()
+
+    def test_policy(self):
+        def task(i, status, pane=None, completed=None):
+            return {"id": i, "status": status, "pane_id": pane, "completed_at": completed}
+        tasks = [task(1, "todo", "t1"), task(2, "todo", "t9"), task(3, "doing", "t1"),
+                 task(4, "blocked", "t1"), task(5, "dropped", "t9")]
+        tasks += [task(10 + i, "done", completed=i) for i in range(7)]  # finished at 0..6
+        out = self.htask.order_tasks(tasks, "t9", show_done=True)
+        self.assertEqual([title for title, _, _ in out], ["BLOCKED", "IN PROGRESS", "TO DO", "DONE"])
+        rows = {title: [t["id"] for t in r] for title, r, _ in out}
+        self.assertEqual(rows["TO DO"], [2, 1])                 # focused pane's first
+        self.assertEqual(rows["DONE"], [16, 15, 14, 13, 12])    # newest five
+        self.assertEqual(out[3][2], 2)                          # "+2 more"
+        self.assertNotIn(5, sum(rows.values(), []))             # dropped hidden
+        self.assertEqual([title for title, _, _ in self.htask.order_tasks(tasks, None, show_done=False)],
+                         ["BLOCKED", "IN PROGRESS", "TO DO"])
+
+
 if __name__ == "__main__":
     unittest.main()

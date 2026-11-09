@@ -10,17 +10,23 @@ import { Chip } from "./chip.js";
 // Theme colour for each task status: the same colours the agents list uses.
 const COLOR = { doing: "working", blocked: "blocked", todo: "muted", done: "done", dropped: "dim" };
 
-// Groups the tasks into the panel's sections, in display order. Empty sections are skipped.
-//
-// TODO(calvin): this is the policy for what you see first. Things to decide:
-//   - should "Blocked" sit above "In progress", since it needs you?
-//   - should tasks from the focused terminal (task.pane_id === terminal) come first in each section?
-//   - how many done tasks to keep: all, the last N, only today's? (task.completed_at: unix seconds)
-//   - do "dropped" tasks appear at all?
-export function sections(tasks, terminal, showDone) {
-  const by = (status) => tasks.filter((task) => task.status === status);
-  const out = [["In progress", by("doing")], ["Blocked", by("blocked")], ["To do", by("todo")]];
-  if (showDone) out.push(["Done", by("done")]);
+// How many done tasks the Done section shows; the rest are a "+N more" line (Archive clears them).
+const DONE_SHOWN = 5;
+
+// The panel's sections in display order, as [title, rows, hidden count]. Empty ones are skipped.
+// Blocked comes first because it needs you. Within each open section, the focused terminal's
+// tasks come first, then the rest of the repo's in id order (sort is stable). Done shows the
+// newest few. Dropped tasks don't show (htask list --all and Archive still see them).
+export function sections(tasks, terminal, showDone, machine) {
+  const mine = (task) => Boolean(terminal) && qualify(machine, task.pane_id) === terminal;
+  const by = (status) => tasks.filter((task) => task.status === status)
+    .sort((a, b) => Number(mine(b)) - Number(mine(a)));
+  const out = [["Blocked", by("blocked"), 0], ["In progress", by("doing"), 0], ["To do", by("todo"), 0]];
+  if (showDone) {
+    const done = tasks.filter((task) => task.status === "done")
+      .sort((a, b) => (b.completed_at ?? 0) - (a.completed_at ?? 0));
+    out.push(["Done", done.slice(0, DONE_SHOWN), Math.max(0, done.length - DONE_SHOWN)]);
+  }
   return out;
 }
 
@@ -231,7 +237,7 @@ class Panel {
     const done = counted.filter((task) => task.status === "done").length;
     const barWidth = Math.max(0, this.width - 28);
     const name = this.project ? this.project.split("/").pop() : "";
-    const shown = sections(this.tasks, this.terminal, this.showDone).filter(([, rows]) => rows.length);
+    const shown = sections(this.tasks, this.terminal, this.showDone, this.machine).filter(([, rows]) => rows.length);
 
     const empty = this.error ? this.error
       : !this.cwd ? "Focus a terminal to see its repo's tasks."
@@ -257,9 +263,10 @@ class Panel {
         .child(div().h_full().rounded(2).bg(t.done).w(counted.length ? barWidth * done / counted.length : 0)))
       .child(div().flex_1().min_h(0).relative().mt(8)
         .child(v_flex().id("htask-list").absolute().inset_0().overflow_y_scroll().px(6).pb(8)
-          .children(shown.map(([title, rows]) => v_flex().flex_none()
-            .child(div().px(8).pt(8).pb(3).text_size(10.5).font_semibold().text_color(t.dim).child(`${title.toUpperCase()}  ${rows.length}`))
-            .children(rows.map((task) => this.row(task, t)))))
+          .children(shown.map(([title, rows, more]) => v_flex().flex_none()
+            .child(div().px(8).pt(8).pb(3).text_size(10.5).font_semibold().text_color(t.dim).child(`${title.toUpperCase()}  ${rows.length + more}`))
+            .children(rows.map((task) => this.row(task, t)))
+            .when(more > 0, (e) => e.child(div().px(8).pl(30).py(3).text_size(11).text_color(t.dim).child(`+${more} more (Archive to clear)`)))))
           .when(!shown.length, (e) => e.child(v_flex().p(8).gap(6).text_color(t.dim)
             .child(empty)
             .when(!this.error && Boolean(this.project), (e) => e.child(

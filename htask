@@ -498,25 +498,26 @@ def focused_context(prev: dict | None) -> dict:
             "agent": pane.get("agent")}
 
 
+DONE_SHOWN = 5  # done tasks shown; the rest are a "+N more" line (htask clean clears them)
+
+
 def order_tasks(tasks: list[sqlite3.Row], focused_pane_id: str | None,
-                show_done: bool) -> list[tuple[str, list[sqlite3.Row]]]:
-    """Group and order tasks into the panel's sections.
+                show_done: bool) -> list[tuple[str, list[sqlite3.Row], int]]:
+    """The panel's sections in display order, as (title, rows, hidden count).
 
-    Returns [(section_title, rows), ...] in display order; empty sections are
-    skipped by the renderer.
-
-    TODO(calvin): this is the policy for what you see first. Things to decide:
-      - section order: should "blocked" sit above "doing" so it grabs attention?
-      - should tasks created by the focused pane (row["pane_id"] == focused_pane_id)
-        float to the top of each section, or is project-wide order better?
-      - how many done tasks to keep: all, the last N, only completed today?
-        (row["completed_at"] is a unix timestamp)
-      - do "dropped" tasks appear at all?
+    Same policy as the app panel's sections(): Blocked first because it needs
+    you; within each open section the focused pane's tasks first, then id order
+    (sorted() is stable); Done shows the newest few; dropped tasks don't show.
+    Empty sections are skipped by the renderer.
     """
-    by = lambda s: [t for t in tasks if t["status"] == s]
-    sections = [("DOING", by("doing")), ("BLOCKED", by("blocked")), ("TODO", by("todo"))]
+    def by(status):
+        rows = [t for t in tasks if t["status"] == status]
+        return sorted(rows, key=lambda t: not (focused_pane_id and t["pane_id"] == focused_pane_id))
+    sections = [("BLOCKED", by("blocked"), 0), ("IN PROGRESS", by("doing"), 0), ("TO DO", by("todo"), 0)]
     if show_done:
-        sections.append(("DONE", by("done")))
+        done = sorted((t for t in tasks if t["status"] == "done"),
+                      key=lambda t: t["completed_at"] or 0, reverse=True)
+        sections.append(("DONE", done[:DONE_SHOWN], max(0, len(done) - DONE_SHOWN)))
     return sections
 
 
@@ -605,13 +606,13 @@ def _render(tasks, project, ctx, width, show_done, show_desc, color) -> list[tup
         ("", 0),
     ]
     sections = order_tasks(tasks, ctx.get("pane_id"), show_done)
-    if not any(rows for _, rows in sections):
+    if not any(rows for _, rows, _ in sections):
         out.append(("No tasks yet.", curses.A_DIM))
         out.append(('Agents add them with: htask add "title" -d "..."', curses.A_DIM))
-    for title, rows in sections:
+    for title, rows, more in sections:
         if not rows:
             continue
-        out.append((f"{title} ({len(rows)})", curses.A_BOLD | curses.A_UNDERLINE))
+        out.append((f"{title} ({len(rows) + more})", curses.A_BOLD | curses.A_UNDERLINE))
         for t in rows:
             mine = "›" if ctx.get("pane_id") and t["pane_id"] == ctx["pane_id"] else " "
             head = f"{mine}{STATUS_GLYPH[t['status']]} #{t['id']} "
@@ -624,6 +625,8 @@ def _render(tasks, project, ctx, width, show_done, show_desc, color) -> list[tup
                     if t[field]:
                         for line in textwrap.wrap(prefix + t[field], width - len(head)):
                             out.append((" " * len(head) + line, curses.A_DIM))
+        if more:
+            out.append((f"      +{more} more (htask clean to clear)", curses.A_DIM))
         out.append(("", 0))
     out.append(("q quit  j/k scroll  d done  v details", curses.A_DIM))
     return out
