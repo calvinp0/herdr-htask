@@ -3,11 +3,11 @@
 ## CLI
 
 ```sh
-htask add "title" [-d "description"] [--after 3,4] [--status todo|doing|blocked|done|dropped]
+htask add "title" [-d "description"] [--after 3,4] [--from 31] [--status todo|doing|blocked|done|dropped]
 htask start|done|drop|reopen <id>...      # reopen = back to to-do (also unblocks)
 htask block <id> -m "what you need"
 htask note <id> "text"
-htask edit <id> [--title ...] [-d ...]
+htask edit <id> [--title ...] [-d ...] [--from 31]    # --from 0 clears it
 htask depend <id> --on 3 [--clear]        # this task comes after #3
 htask next                                # the first to-do that isn't waiting on another
 htask list [--all] [--archived] [--everywhere] [--json]   # --everywhere: every repo
@@ -99,6 +99,7 @@ the panel reads. After each write htask rewrites `signal/changed` beside it, whi
 
 - `tasks`: one row per task. `project` is the repo root; `pane_id` is the terminal it came from
   (`t6` in the app, `w1:p2` in the terminal UI); `external_id` ties it to a Claude or Codex task.
+- `from_id` on a task: the task it came out of (`--from`). Not an order; that's `deps`.
 - `deps`: `task_id` comes after `depends_on`. A done or dropped dependency no longer holds it back.
 - `changes`: who changed what (`by = 'you'` for the human), for the Claude inbox hook.
 - `hook_cursor`: how far each Claude session has read `changes`.

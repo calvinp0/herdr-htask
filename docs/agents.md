@@ -87,6 +87,7 @@ Either way, use the `htask` CLI for (ids come from `htask list`):
   (`htask next` names the first one that isn't waiting on another).
 - `htask depend <id> --on <earlier id>` when a step can't start before another is done
   (or `htask add ... --after <id>`).
+- `htask add "<title>" --from <id>` for follow-up work a task turns up, so it shows where it came from.
 - `htask note <id> "<progress, findings, next step>"` to leave information for the human.
 - `htask block <id> -m "<what you need>"` when you are waiting on the user or something
   external. This notifies the human.
@@ -113,6 +114,7 @@ Either way, use the `htask` CLI for (ids come from `htask list`):
   (`htask next` names the first one that isn't waiting on another).
 - `htask depend <id> --on <earlier id>` when a step can't start before another is done
   (or `htask add ... --after <id>`).
+- `htask add "<title>" --from <id>` for follow-up work a task turns up, so it shows where it came from.
 - `htask note <id> "<progress, findings, next step>"` to leave information for the human.
 - `htask block <id> -m "<what you need>"` when you are waiting on the user or something external. This notifies the human.
 - A message starting with `[Herdr task panel]` means the human changed one of your tasks: follow it, and update your plan to match so your next update doesn't undo it.
@@ -131,6 +133,7 @@ the Herdr task panel. Tasks are scoped to the current git repo.
   `--after <id>` when a step can't start before an earlier one is done. `htask next` names the
   first step that isn't waiting.
 - `htask start <id>` before working on a step, `htask done <id>` after verifying it.
+- `htask add "<title>" --from <id>` for follow-up work a task turns up, so it shows where it came from.
 - `htask note <id> "<progress, findings, next step>"` to leave information for the human.
 - `htask block <id> -m "<what you need>"` when you are waiting on the user or something external. This notifies the human.
 - Keep using your own todo tool as well; htask is the record the human reads.

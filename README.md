@@ -70,6 +70,7 @@ Then open a space on the SSH machine and do the two steps above.
 - **? Explain…** opens a conversation with an agent about a task, without starting it.
 - **Live state:** in-progress tasks show their agent's state (`t6 working`). Click it to jump there.
 - **Order:** a task can come after another (`htask add … --after 3`). It shows `after #3` until #3 is done.
+- **Follow-ups:** `htask add … --from 31` marks where a task came from. It shows `from #31`.
 - **This repo / All** switches between the focused repo and every repo on the machine.
 - **Chips** show or hide To do, Done, Dropped and Archived.
 - **Archive** puts away done tasks; reopen one to bring it back.

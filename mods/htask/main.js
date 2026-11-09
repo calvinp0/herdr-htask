@@ -77,7 +77,8 @@ const TELL = {
 // The first message an agent started on a task gets: the task, and how to report on it. `htask
 // start` claims the task for the agent's terminal, so the panel shows it working.
 function taskMessage(task) {
-  const done = task.description ? ` Done looks like: ${task.description}.` : "";
+  const done = (task.description ? ` Done looks like: ${task.description}.` : "")
+    + (task.from_id ? ` It came out of htask #${task.from_id} (see \`htask list --all\`).` : "");
   return `Work on htask #${task.id} "${task.title}" in this repo.${done} Run \`htask start ${task.id}\` first, `
     + `\`htask done ${task.id}\` once it's verified, or \`htask block ${task.id} -m "why"\` if you get stuck.`;
 }
@@ -85,7 +86,8 @@ function taskMessage(task) {
 // Explain: a conversation with an agent about a task, in its own terminal, as deep as it needs to go,
 // with room for follow-ups. The panel only gets a short summary at the end.
 function explainMessage(task) {
-  const now = task.description ? ` Its description so far: "${task.description}".` : "";
+  const now = (task.description ? ` Its description so far: "${task.description}".` : "")
+    + (task.from_id ? ` It came out of htask #${task.from_id}.` : "");
   return `Explain htask #${task.id} "${task.title}" to me, and don't start working on it.${now} Look at the `
     + `repo as needed and cover what it involves, why it's needed, which parts of the code it touches, what done `
     + `looks like, and the open questions or risks, in as much depth as it needs. I may ask follow-ups or reframe `
@@ -250,6 +252,11 @@ class Panel {
     try { localStorage.setItem("show", JSON.stringify(this.show)); } catch { /* not remembered */ }
     if (name === "archived" || name === "all") { this.archived = []; this.refresh(cx); }
     cx.notify();
+  }
+
+  // A task's title by id, from what's loaded (this repo, or every repo in All; archived ones too).
+  titleOf(id) {
+    return (this.tasks.find((x) => x.id === id) ?? this.archived.find((x) => x.id === id))?.title ?? null;
   }
 
   toggle(id, cx) {
@@ -517,6 +524,9 @@ class Panel {
         .when((task.waiting ?? []).length > 0 && (task.status === "todo" || task.status === "doing"), (e) => e.child(
           div().h(19).flex().flex_none().items_center().text_size(10).text_color(t.dim)
             .tooltip("Comes after these tasks, which aren't done yet").child(`after ${task.waiting.map((d) => `#${d}`).join(", ")}`)))
+        // Where it came from (htask add --from): a follow-up of an earlier task.
+        .when(Boolean(task.from_id), (e) => e.child(div().h(19).flex().flex_none().items_center().text_size(10)
+          .text_color(t.dim).tooltip(this.titleOf(task.from_id) ?? `#${task.from_id}`).child(`from #${task.from_id}`)))
         // In All, which repo the task belongs to.
         .when(this.show.all && Boolean(task.project), (e) => e.child(div().h(19).flex().flex_none().items_center()
           .max_w(110).text_size(10).text_color(task.project === this.project ? t.accent : t.dim).truncate()
@@ -525,6 +535,10 @@ class Panel {
       .when(Boolean(task.note) && !done, (e) => e.child(detail(`↳ ${task.note}`, task.status === "blocked" ? t.blocked : t.muted)))
       .when(orphaned, (e) => e.child(detail("Nobody is working on this now. Pick it up or move it back to to-do.", t.blocked)))
       .when(open && Boolean(task.description), (e) => e.child(detail(task.description, t.muted)))
+      .when(open && Boolean(task.from_id), (e) => e.child(detail(
+        `From #${task.from_id}${this.titleOf(task.from_id) ? ` ${this.titleOf(task.from_id)}` : ""}`, t.dim)))
+      .when(open && (task.followups ?? []).length > 0, (e) => e.child(detail(
+        `Follow-ups: ${task.followups.map((id) => `#${id}${this.titleOf(id) ? ` ${this.titleOf(id)}` : ""}`).join(", ")}`, t.dim)))
       .when(open, (e) => e.child(detail(
         [task.agent, task.pane_id, `updated ${ago(task.updated_at)}`].filter(Boolean).join(" · "), t.dim)))
       .when(open, (e) => e.child(this.actions(task, t)));

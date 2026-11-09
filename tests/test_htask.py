@@ -792,5 +792,29 @@ class Versions(unittest.TestCase):
         self.assertEqual((cli, manifest), (mod, mod))
 
 
+class CameFrom(Base):
+    def test_from_and_followups(self):
+        self.run_htask("add", "parser")
+        self.assertIn("(from #1)", self.run_htask("add", "handle 6.1 edge case", "--from", "1").stdout)
+        self.run_htask("add", "docs for the parser", "--from", "1")
+        out = {t["title"]: t for t in json.loads(self.run_htask("list", "--json").stdout)["tasks"]}
+        self.assertEqual(out["parser"]["followups"], [2, 3])
+        self.assertEqual(out["handle 6.1 edge case"]["from_id"], 1)
+        self.assertIn("handle 6.1 edge case  (from #1)", self.run_htask("list").stdout)
+
+    def test_edit_sets_and_clears(self):
+        self.run_htask("add", "a")
+        self.run_htask("add", "b")
+        self.run_htask("edit", "2", "--from", "1")
+        self.assertEqual(self.tasks()[1]["from_id"], 1)
+        self.run_htask("edit", "2", "--from", "0")
+        self.assertIsNone(self.tasks()[1]["from_id"])
+
+    def test_refusals(self):
+        self.run_htask("add", "a")
+        self.assertIn("no task #9", self.run_htask("add", "x", "--from", "9", check=False).stderr)
+        self.assertIn("itself", self.run_htask("edit", "1", "--from", "1", check=False).stderr)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -73,6 +73,9 @@ the agent that owns the task.
   with the task's own agent first. The message asks the agent to explain the task in its own
   conversation, as deep as needed, without starting it, to expect follow-ups, and at the end to save a
   short summary with `htask edit <id> -d`. Asking a running agent also focuses it (`agent.focus`).
+- A task that came out of another (`htask add --from 31`) shows a `dim` "from #31" tag (tooltip:
+  that task's title); opened, it lists "From #31 …" and "Follow-ups: #44 …". Run and Explain
+  messages mention it.
 - A to-do or in-progress task with unfinished dependencies shows a `dim` "after #3" tag; its Run
   menu starts with a red "Comes after #3, not done yet." line, its Done button reads **Done anyway**
   (`htask done <id> --force`), and clicking its status mark does nothing (the tooltip says why).

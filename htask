@@ -101,6 +101,11 @@ def connect() -> sqlite3.Connection:
     if "archived_at" not in columns:
         with conn:
             conn.execute("ALTER TABLE tasks ADD COLUMN archived_at REAL")
+    # v4: from_id, the task this one came out of (a follow-up or split-off piece). Not an order:
+    # that's deps. htask add --from 31.
+    if "from_id" not in columns:
+        with conn:
+            conn.execute("ALTER TABLE tasks ADD COLUMN from_id INTEGER")
     return conn
 
 
@@ -286,20 +291,32 @@ def waiting_on(deps: list[tuple[int, str]]) -> list[int]:
     return [d for d, status in deps if status not in ("done", "dropped")]
 
 
+def _check_from(conn: sqlite3.Connection, from_id: int | None, task_id: int | None = None) -> None:
+    if from_id is None:
+        return
+    if from_id == task_id:
+        raise SystemExit(f"htask: #{task_id} can't come from itself")
+    if conn.execute("SELECT 1 FROM tasks WHERE id = ?", (from_id,)).fetchone() is None:
+        raise SystemExit(f"htask: no task #{from_id}")
+
+
 def cmd_add(args) -> None:
     conn, now = connect(), time.time()
     project = _project_from_args(args)
+    _check_from(conn, args.from_id)
     with writing(conn, project):
         cur = conn.execute(
             "INSERT INTO tasks (project, title, description, status, agent, pane_id,"
-            " created_at, updated_at, completed_at) VALUES (?,?,?,?,?,?,?,?,?)",
+            " created_at, updated_at, completed_at, from_id) VALUES (?,?,?,?,?,?,?,?,?,?)",
             (project, args.title, args.description or "", args.status,
              args.agent or detect_agent(), command_origin(project), now, now,
-             now if args.status == "done" else None),
+             now if args.status == "done" else None, args.from_id),
         )
         log_change(conn, args, cur.lastrowid, "added")
         add_deps(conn, cur.lastrowid, _ids(args.after))
-    print(f"#{cur.lastrowid} {args.title}" + (f" (after {', '.join(f'#{d}' for d in _ids(args.after))})" if args.after else ""))
+    extra = [f"after {', '.join(f'#{d}' for d in _ids(args.after))}"] if args.after else []
+    extra += [f"from #{args.from_id}"] if args.from_id else []
+    print(f"#{cur.lastrowid} {args.title}" + (f" ({'; '.join(extra)})" if extra else ""))
 
 
 def set_status(args, status: str) -> None:
@@ -349,8 +366,11 @@ def cmd_edit(args) -> None:
     conn, project = connect(), _project_from_args(args)
     _get_task(conn, args.id, project)
     fields = {k: v for k, v in (("title", args.title), ("description", args.description)) if v is not None}
+    if args.from_id is not None:  # --from 0 clears it
+        _check_from(conn, args.from_id or None, args.id)
+        fields["from_id"] = args.from_id or None
     if not fields:
-        sys.exit("htask: edit needs --title and/or -d")
+        sys.exit("htask: edit needs --title, -d or --from")
     fields["updated_at"] = time.time()
     with writing(conn, project):
         conn.execute(f"UPDATE tasks SET {', '.join(f'{k} = ?' for k in fields)} WHERE id = ?",
@@ -370,8 +390,12 @@ def cmd_list(args) -> None:
     rows = [r for r in rows if args.all or args.archived or r["status"] not in ("done", "dropped")]
     deps = deps_of(conn)
     if args.json:
+        followups: dict[int, list[int]] = {}
+        for f in conn.execute("SELECT id, from_id FROM tasks WHERE from_id IS NOT NULL ORDER BY id"):
+            followups.setdefault(f["from_id"], []).append(f["id"])
         tasks = [{**dict(r), "after": [d for d, _ in deps.get(r["id"], [])],
-                  "waiting": waiting_on(deps.get(r["id"], []))} for r in rows]
+                  "waiting": waiting_on(deps.get(r["id"], [])), "followups": followups.get(r["id"], [])}
+                 for r in rows]
         print(json.dumps({"project": project, "tasks": tasks}, indent=2))
         return
     if not rows:
@@ -384,6 +408,7 @@ def cmd_list(args) -> None:
             print(f"{'' if r is rows[0] else chr(10)}== {os.path.basename(shown) or shown}  ({shown})")
         waiting = waiting_on(deps.get(r["id"], []))
         after = f"  (after {', '.join(f'#{d}' for d in waiting)})" if waiting and r["status"] != "done" else ""
+        after += f"  (from #{r['from_id']})" if r["from_id"] else ""
         print(f"#{r['id']:<4} [{r['status']:<7}] {r['title']}{after}")
         if r["description"]:
             print(textwrap.indent(r["description"], " " * 16))
@@ -603,6 +628,7 @@ Either way, use the `htask` CLI for (ids come from `htask list`):
   (`htask next` names the first one that isn't waiting on another).
 - `htask depend <id> --on <earlier id>` when a step can't start before another is done
   (or `htask add ... --after <id>`).
+- `htask add "<title>" --from <id>` for follow-up work a task turns up, so it shows where it came from.
 - `htask note <id> "<progress, findings, next step>"` to leave information for the human.
 - `htask block <id> -m "<what you need>"` when you are waiting on the user or something
   external. This notifies the human.
@@ -618,6 +644,7 @@ the Herdr task panel. Tasks are scoped to the current git repo.
   `--after <id>` when a step can't start before an earlier one is done. `htask next` names the
   first step that isn't waiting.
 - `htask start <id>` before working on a step, `htask done <id>` after verifying it.
+- `htask add "<title>" --from <id>` for follow-up work a task turns up, so it shows where it came from.
 - `htask note <id> "<progress, findings, next step>"` to leave information for the human.
 - `htask block <id> -m "<what you need>"` when you are waiting on the user or something external. This notifies the human.
 - Keep using your own todo tool as well; htask is the record the human reads.
@@ -639,6 +666,7 @@ Either way, use the `htask` CLI for (ids come from `htask list`):
   (`htask next` names the first one that isn't waiting on another).
 - `htask depend <id> --on <earlier id>` when a step can't start before another is done
   (or `htask add ... --after <id>`).
+- `htask add "<title>" --from <id>` for follow-up work a task turns up, so it shows where it came from.
 - `htask note <id> "<progress, findings, next step>"` to leave information for the human.
 - `htask block <id> -m "<what you need>"` when you are waiting on the user or something external. This notifies the human.
 - A message starting with `[Herdr task panel]` means the human changed one of your tasks: follow it, and update your plan to match so your next update doesn't undo it.
@@ -1364,6 +1392,7 @@ def main(argv=None) -> None:
     a.add_argument("--status", choices=STATUSES, default="todo")
     a.add_argument("--agent", help="who added it (default: detected from the environment)")
     a.add_argument("--after", action="append", metavar="IDS", help="task(s) this one comes after: 3 or 3,4")
+    a.add_argument("--from", dest="from_id", type=int, metavar="ID", help="the task this one came out of (a follow-up)")
     a.set_defaults(fn=cmd_add)
 
     for name, status, helptext in (
@@ -1389,6 +1418,7 @@ def main(argv=None) -> None:
     e.add_argument("id", type=int)
     e.add_argument("--title")
     e.add_argument("-d", "--description")
+    e.add_argument("--from", dest="from_id", type=int, metavar="ID", help="the task it came out of (0 clears)")
     e.set_defaults(fn=cmd_edit)
 
     dp = sub.add_parser("depend", help="set what a task comes after")
