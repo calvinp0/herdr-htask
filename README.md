@@ -6,11 +6,11 @@ what they're working on, what's blocked, and what's left. Agents record tasks wi
 repo's tasks, and updates as soon as any agent writes.
 
 <p align="center">
-  <img src="preview.png" width="420" alt="The Tasks panel in the Herdr desktop app: To do, Done and Archived filter chips, a blocked task with its reason, a task in progress, two to-do tasks, the five most recent done tasks and three archived ones, with a Tasks 7/11 button and a red dot in the tab bar">
+  <img src="preview.png" width="420" alt="The Tasks panel in the Herdr desktop app: To do, Done, Dropped and Archived filter chips, a blocked task with its reason, a task in progress, three to-do tasks, the five most recent done tasks with Show 5 more, and four archived ones, with a Tasks 10/15 button and a red dot in the tab bar">
 </p>
 
 The panel showing this repo's own tasks. The status bar gets a chip with the same count and how
-many tasks are blocked across all repos: <img src="docs/chip.png" height="22" alt="Status-bar chip: 7/11, 5 blocked">
+many tasks are blocked across all repos: <img src="docs/chip.png" height="22" alt="Status-bar chip: 10/15, 5 blocked">
 
 (The middle of the panel, which was empty, is cut out of the screenshot.)
 

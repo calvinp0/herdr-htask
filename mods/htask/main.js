@@ -3,7 +3,7 @@
 // Both read htask (one SQLite DB for every agent) and redraw when it writes or focus changes repo.
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, Scrollbar, InputState, Input } from "gpui-base";
-import { theme, props, run, agents, terminals, hc, notify, nextCommand, closeOverlay } from "herdr";
+import { theme, props, run, agents, terminals, hc, notify, nextCommand, closeOverlay, settings } from "herdr";
 import { htask, htaskError, qualify, location, watchSignal } from "./common.js";
 import { Chip } from "./chip.js";
 
@@ -278,7 +278,10 @@ class Panel {
     const t = theme();
     const counted = this.tasks.filter((task) => task.status !== "dropped");
     const done = counted.filter((task) => task.status === "done").length;
-    const barWidth = Math.max(0, this.width - 28);
+    // on_size_change reports zoomed pixels, and .w() zooms again: divide the zoom out, or the bar
+    // runs past its track by the zoom factor.
+    const zoom = Number(settings()?.zoom) || 1;
+    const barWidth = Math.max(0, this.width / zoom - 28);
     const name = this.project ? this.project.split("/").pop() : "";
     const owners = new Set(this.tasks.filter((task) => task.status !== "done" && task.status !== "dropped" && task.pane_id)
       .map((task) => task.pane_id));
