@@ -192,6 +192,74 @@ class TuiProgress(Base):
         self.env["HERDR_BIN_PATH"] = "/nonexistent/herdr"
         self.run_htask("add", "a")  # must not try (or fail) to report
 
+INBOX = Path(__file__).resolve().parent.parent / "hooks" / "claude-inbox.sh"
+
+
+class ClaudeInbox(Base):
+    def setUp(self):
+        super().setUp()
+        self.env["HTASK_BIN"] = str(HTASK)
+
+    def inbox(self, session="s1", event="PostToolUse"):
+        payload = {"session_id": session, "cwd": str(self.repo_a), "hook_event_name": event, "tool_name": "Bash"}
+        out = subprocess.run([str(INBOX)], input=json.dumps(payload), env=self.env, capture_output=True, text=True)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        if not out.stdout.strip():
+            return None
+        context = json.loads(out.stdout)["hookSpecificOutput"]
+        self.assertEqual(context["hookEventName"], event)
+        return context["additionalContext"]
+
+    def claude_task(self, subject, task_id, session="s1"):
+        event = {"session_id": session, "cwd": str(self.repo_a), "tool_name": "TaskCreate",
+                 "tool_input": {"subject": subject}, "tool_response": {"task": {"id": task_id}}}
+        subprocess.run([sys.executable, str(HTASK), "hook", "claude"], input=json.dumps(event),
+                       env=self.env, check=True, capture_output=True, text=True)
+
+    def test_first_call_only_sets_the_cursor(self):
+        self.run_htask("--by", "you", "add", "old backlog")
+        self.assertIsNone(self.inbox())
+
+    def test_human_change_to_own_task_is_reported_once(self):
+        self.claude_task("Parse output", "3")
+        self.assertIsNone(self.inbox())
+        self.run_htask("--by", "you", "done", "1")
+        text = self.inbox()
+        self.assertIn('marked htask #1 "Parse output" (your task 3) done', text)
+        self.assertIn("TaskUpdate", text)
+        self.assertIsNone(self.inbox())  # already delivered
+
+    def test_agent_changes_are_not_reported(self):
+        self.claude_task("Parse output", "1")
+        self.inbox()
+        self.run_htask("done", "1")  # no --by you: an agent did it
+        self.assertIsNone(self.inbox())
+
+    def test_backlog_additions_in_this_repo_only(self):
+        self.inbox()
+        self.run_htask("--by", "you", "add", "here")
+        self.run_htask("--by", "you", "add", "elsewhere", cwd=self.repo_b)
+        text = self.inbox(event="UserPromptSubmit")
+        self.assertIn('added htask #1 "here"', text)
+        self.assertNotIn("elsewhere", text)
+
+    def test_other_sessions_tasks_are_not_reported(self):
+        self.env["HERDR_PANE_ID"] = "w9:p9"  # not the terminal that will ask
+        self.claude_task("theirs", "1", session="other")
+        self.env["HERDR_PANE_ID"] = "w1:p1"
+        self.inbox()
+        self.run_htask("--by", "you", "drop", "1")
+        self.assertIsNone(self.inbox())
+
+    def test_block_reason_and_notes_are_passed_on(self):
+        self.claude_task("Parse output", "2")
+        self.inbox()
+        self.run_htask("--by", "you", "block", "1", "-m", "wait for the new outputs")
+        self.run_htask("--by", "you", "note", "1", "use the 6.1 files")
+        text = self.inbox()
+        self.assertIn('blocked: "wait for the new outputs"', text)
+        self.assertIn('note on htask #1 "Parse output" (your task 2): "use the 6.1 files"', text)
+
 
 if __name__ == "__main__":
     unittest.main()

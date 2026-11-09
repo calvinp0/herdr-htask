@@ -46,6 +46,21 @@ CREATE TABLE IF NOT EXISTS tasks (
     completed_at REAL
 );
 CREATE INDEX IF NOT EXISTS tasks_project ON tasks (project, status);
+-- Who changed what. by = 'you' for the human (the app panel passes --by you), so agents can be
+-- told about changes they didn't make.
+CREATE TABLE IF NOT EXISTS changes (
+    id      INTEGER PRIMARY KEY,
+    task_id INTEGER NOT NULL,
+    at      REAL NOT NULL,
+    by      TEXT,
+    what    TEXT NOT NULL,   -- added | status:<status> | note | edit
+    detail  TEXT
+);
+-- How far each Claude session has read `changes` (the inbox hook).
+CREATE TABLE IF NOT EXISTS hook_cursor (
+    session     TEXT PRIMARY KEY,
+    last_change INTEGER NOT NULL
+);
 """
 
 
@@ -155,6 +170,11 @@ def detect_agent() -> str | None:
     return None
 
 
+def log_change(conn: sqlite3.Connection, args, task_id: int, what: str, detail: str | None = None) -> None:
+    conn.execute("INSERT INTO changes (task_id, at, by, what, detail) VALUES (?,?,?,?,?)",
+                 (task_id, time.time(), getattr(args, "by", None) or detect_agent(), what, detail))
+
+
 def origin_id() -> str | None:
     """Where the command ran: a Herdr TUI pane (w1:p2) or a Herdr app terminal (t9)."""
     return os.environ.get("HERDR_PANE_ID") or os.environ.get("HC_TERMINAL_ID")
@@ -193,6 +213,7 @@ def cmd_add(args) -> None:
              args.agent or detect_agent(), origin_id(), now, now,
              now if args.status == "done" else None),
         )
+        log_change(conn, args, cur.lastrowid, "added")
     print(f"#{cur.lastrowid} {args.title}")
 
 
@@ -209,6 +230,7 @@ def set_status(args, status: str) -> None:
         sets = ", ".join(f"{k} = ?" for k in fields)
         with writing(conn, project):
             conn.execute(f"UPDATE tasks SET {sets} WHERE id = ?", (*fields.values(), task_id))
+            log_change(conn, args, task_id, f"status:{status}", getattr(args, "message", None))
         print(f"#{task_id} -> {status}")
 
 
@@ -218,6 +240,7 @@ def cmd_note(args) -> None:
     with writing(conn, project):
         conn.execute("UPDATE tasks SET note = ?, updated_at = ? WHERE id = ?",
                      (args.text, time.time(), args.id))
+        log_change(conn, args, args.id, "note", args.text)
     print(f"#{args.id} note set")
 
 
@@ -231,6 +254,7 @@ def cmd_edit(args) -> None:
     with writing(conn, project):
         conn.execute(f"UPDATE tasks SET {', '.join(f'{k} = ?' for k in fields)} WHERE id = ?",
                      (*fields.values(), args.id))
+        log_change(conn, args, args.id, "edit")
     print(f"#{args.id} updated")
 
 
@@ -344,8 +368,76 @@ def sync_claude(event: dict, conn: sqlite3.Connection) -> int:
     return 0
 
 
+STATUS_WORDS = {"done": "done", "dropped": "dropped", "todo": "back to to-do", "doing": "in progress",
+                "blocked": "blocked"}
+
+
+def human_changes(conn: sqlite3.Connection, session: str, cwd: str, pane: str | None) -> list[str]:
+    """What the human changed since this Claude session last asked, as lines for its context.
+
+    Only changes made with --by you, and only to tasks that concern the session: its own
+    (mirrored from its task tool, or made from its terminal), plus tasks the human added to
+    its repo. The first call only sets the cursor: an old backlog isn't news.
+    """
+    latest = conn.execute("SELECT coalesce(max(id), 0) FROM changes").fetchone()[0]
+    row = conn.execute("SELECT last_change FROM hook_cursor WHERE session = ?", (session,)).fetchone()
+    with conn:
+        conn.execute("INSERT INTO hook_cursor (session, last_change) VALUES (?, ?)"
+                     " ON CONFLICT(session) DO UPDATE SET last_change = excluded.last_change", (session, latest))
+    if row is None:
+        return []
+    rows = conn.execute(
+        "SELECT c.what, c.detail, t.id, t.title, t.project, t.pane_id, t.external_id FROM changes c"
+        " JOIN tasks t ON t.id = c.task_id WHERE c.id > ? AND c.by = 'you' ORDER BY c.id",
+        (row["last_change"],)).fetchall()
+    project, mine = None, f"claude:{session}:"
+    lines = []
+    for r in rows:
+        if r["what"] == "added":
+            # A task the human added belongs to no agent yet: news for every session in its repo.
+            project = project or project_root(cwd)
+            if r["project"] != project:
+                continue
+        elif not ((r["external_id"] or "").startswith(mine) or (pane is not None and r["pane_id"] == pane)):
+            continue
+        ref = f'htask #{r["id"]} "{r["title"]}"'
+        claude_id = (r["external_id"] or "")[len(mine):] if (r["external_id"] or "").startswith(mine) else None
+        yours = f" (your task {claude_id})" if claude_id and not claude_id.startswith("todo:") else ""
+        if r["what"] == "added":
+            lines.append(f"The human added {ref} to this repo's task list.")
+        elif r["what"].startswith("status:"):
+            status = r["what"].split(":", 1)[1]
+            lines.append(f"The human marked {ref}{yours} {STATUS_WORDS.get(status, status)}"
+                         + (f': "{r["detail"]}"' if r["detail"] else "") + ".")
+        elif r["what"] == "note":
+            lines.append(f'The human left a note on {ref}{yours}: "{r["detail"]}".')
+        elif r["what"] == "edit":
+            lines.append(f"The human edited {ref}{yours}; run `htask list` to see it.")
+    if lines:
+        lines.append("These changes came from the Herdr task panel. Update your own task list to match"
+                     " (TaskUpdate), so your next update doesn't undo them.")
+    return lines
+
+
+def cmd_inbox(args) -> None:
+    """Claude Code hook (PostToolUse, UserPromptSubmit): pass on the human's task changes."""
+    try:
+        event = json.load(sys.stdin)
+        conn = connect()
+        lines = human_changes(conn, event.get("session_id") or "unknown",
+                              event.get("cwd") or os.getcwd(), origin_id())
+        if lines:
+            print(json.dumps({"hookSpecificOutput": {
+                "hookEventName": event.get("hook_event_name", "PostToolUse"),
+                "additionalContext": "\n".join(lines)}}))
+    except Exception as e:  # noqa: BLE001 - a broken hook must not block the agent
+        print(f"htask inbox: {e}", file=sys.stderr)
+
+
 def cmd_hook(args) -> None:
     """Hook entry point. Never fails the agent's tool call: errors go to stderr, exit 0."""
+    if args.agent == "claude-inbox":
+        return cmd_inbox(args)
     try:
         event = json.load(sys.stdin)
         conn = connect()
@@ -542,6 +634,7 @@ def _render(tasks, project, ctx, width, show_done, show_desc, color) -> list[tup
 def main(argv=None) -> None:
     p = argparse.ArgumentParser(prog="htask", description=__doc__.split("\n\n")[0])
     p.add_argument("--project", help="project dir (default: git root of cwd)")
+    p.add_argument("--by", help="who is making the change (the app panel passes 'you')")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     a = sub.add_parser("add", help="create a task, prints its id")
@@ -590,7 +683,8 @@ def main(argv=None) -> None:
     sm.set_defaults(fn=cmd_summary)
 
     hk = sub.add_parser("hook", help="agent hook: mirror the agent's own task list (reads stdin)")
-    hk.add_argument("agent", choices=["claude"])
+    hk.add_argument("agent", choices=["claude", "claude-inbox"],
+                    help="claude: mirror its task tool; claude-inbox: tell it what the human changed")
     hk.set_defaults(fn=cmd_hook)
 
     sub.add_parser("panel", help="run the TUI panel").set_defaults(fn=run_panel)

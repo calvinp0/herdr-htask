@@ -115,6 +115,23 @@ without the agent doing anything. Add it to `~/.claude/settings.json`:
 
 The hook always exits 0, so a failure can never block a tool call. Errors go to stderr.
 
+### When you change a task, the agent hears about it
+
+Panel changes run as `htask --by you ...`, and htask logs who changed what.
+
+- **Claude Code:** the inbox hook adds your changes to Claude's context at its next tool call
+  or prompt. It includes Claude's own task id, so Claude can update its list rather than undo
+  your change. The hook runs on every tool call; a shell pre-check (about 3 ms) skips Python
+  unless htask has written since that session last looked.
+
+  ```json
+  "PostToolUse": [ { "matcher": "*", "hooks": [ { "type": "command", "command": "<repo>/hooks/claude-inbox.sh", "timeout": 10 } ] } ],
+  "UserPromptSubmit": [ { "hooks": [ { "type": "command", "command": "<repo>/hooks/claude-inbox.sh", "timeout": 10 } ] } ]
+  ```
+- **Other agents (Codex, Pi, ...):** the panel types a `[Herdr task panel] ...` message into the
+  owning terminal with `hc send`. `hc send` won't type while the agent waits on a question,
+  because it could answer it; you get a toast that takes you there instead.
+
 ## Tell the agents to use it
 
 Paste this into `~/.claude/CLAUDE.md` and `~/.codex/AGENTS.md`, or into a

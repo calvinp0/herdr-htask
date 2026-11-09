@@ -3,7 +3,7 @@
 // Both read htask (one SQLite DB for every agent) and redraw when it writes or focus changes repo.
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, Scrollbar, InputState, Input } from "gpui-base";
-import { theme, props, run, agents, terminals } from "herdr";
+import { theme, props, run, agents, terminals, hc, notify } from "herdr";
 import { htask, htaskError, qualify, location, watchSignal } from "./common.js";
 import { Chip } from "./chip.js";
 
@@ -48,6 +48,14 @@ const ACTIONS = {
   blocked: [["Unblock", "reopen"], ["Done", "done"], ["Drop", "drop"]],
   done: [["Reopen", "reopen"]],
   dropped: [["Reopen", "reopen"]],
+};
+
+// What the owning agent is told when you change its task from the panel.
+const TELL = {
+  done: (ref) => `${ref} is marked done. Treat it as finished and don't change its status back.`,
+  drop: (ref) => `${ref} is dropped. Stop working on it.`,
+  reopen: (ref, task) => (task.status === "blocked" ? `${ref} is unblocked. You can carry on with it.` : `${ref} is back in to-do.`),
+  start: (ref) => `${ref} is marked in progress.`,
 };
 
 function ago(seconds) {
@@ -95,20 +103,50 @@ class Panel {
     });
   }
 
-  // Run an htask command on this project. The signal watch reloads the list afterwards.
-  htask(args, cx) {
+  // Run an htask command on this project, as you (--by you: Claude's inbox hook passes your
+  // changes on). The signal watch reloads the list afterwards. `then` runs once it succeeded.
+  htask(args, cx, then) {
     const project = this.project, machine = this.machine;
     if (!project) return;
     this.note = null;
     cx.spawn(async (cx) => {
       try {
-        const r = await htask(machine, ["--project", project, ...args]);
+        const r = await htask(machine, ["--project", project, "--by", "you", ...args]);
         if (r.code !== 0) throw new Error(htaskError(machine, r));
+        then?.(cx);
         if (machine) this.refresh(cx);  // no watch on a remote space
       } catch (e) {
         this.note = String(e?.message ?? e);
       }
       cx.notify();
+    });
+  }
+
+  // Change a task's status, then tell the agent working on it, if one still is.
+  change(task, cmd, cx) {
+    const own = owner(task, this.machine);
+    this.htask([cmd, String(task.id)], cx, (cx) => this.tell(task, cmd, own, cx));
+  }
+
+  // Claude sessions hear about it from the inbox hook on their next step, without a new turn.
+  // Other agents get a message typed into their terminal. hc send refuses while the agent waits
+  // on a question (typing could answer it): then the toast sends you there instead.
+  tell(task, cmd, own, cx) {
+    if (!own || own.state === "gone" || own.state === "exited" || !TELL[cmd]) return;
+    const ref = `htask #${task.id} "${task.title}"`, what = TELL[cmd](ref, task);
+    const there = { name: "agent.focus", args: { terminal: own.addr } };
+    if (task.agent === "claude") {
+      notify({ title: `Claude in ${own.addr} will see this at its next step`, body: what, level: "info", action: there });
+      return;
+    }
+    cx.spawn(async () => {
+      const text = `[Herdr task panel] The human changed your task: ${what} Keep htask in sync with this.`;
+      const r = await hc(["send", own.addr, text]).catch((e) => ({ code: 1, stderr: String(e?.message ?? e) }));
+      if (r.code === 0) notify({ title: `Told ${own.addr}`, body: what, level: "info", action: there });
+      else notify({
+        title: `Couldn't tell ${own.addr}`, level: "warning", action: there,
+        body: own.state === "blocked" ? "It's waiting on a question. Tell it there." : (r.stderr || r.stdout || "").trim(),
+      });
     });
   }
 
@@ -136,7 +174,7 @@ class Panel {
     const next = task.status === "done" || task.status === "dropped" ? "reopen" : "done";
     return h_flex().id(`dot-${task.id}`).w(14).h(19).flex_none().items_center().justify_center().rounded(4)
       .hover((s) => s.bg(t.raised)).tooltip(next === "done" ? "Mark done" : "Reopen")
-      .on_click((_e, cx) => { cx.stop_propagation(); this.htask([next, String(task.id)], cx); })
+      .on_click((_e, cx) => { cx.stop_propagation(); this.change(task, next, cx); })
       .child(mark);
   }
 
@@ -153,7 +191,7 @@ class Panel {
     return h_flex().pl(22).pt(4).gap(5).children((ACTIONS[task.status] ?? []).map(([label, cmd]) =>
       div().id(`act-${task.id}-${cmd}`).px(7).py(2).rounded(5).text_size(11).cursor_pointer()
         .bg(t.raised).text_color(t.foreground).hover((s) => s.bg(t.hover))
-        .on_click((_e, cx) => { cx.stop_propagation(); this.htask([cmd, String(task.id)], cx); })
+        .on_click((_e, cx) => { cx.stop_propagation(); this.change(task, cmd, cx); })
         .child(label)));
   }
 
