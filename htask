@@ -28,9 +28,10 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 
-__version__ = "0.2.3"
+__version__ = "0.2.4"
 STATUSES = ("todo", "doing", "blocked", "done", "dropped")
-PLUGIN_ID = "calvin.htask"
+PLUGIN_ID = "calvinp0.htask"
+OLD_PLUGIN_IDS = ("calvin.htask",)  # before 0.2.4
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS tasks (
@@ -630,12 +631,22 @@ def cmd_doctor(args) -> None:
         print("  --  desktop-app mod not installed (optional)")
 
     plugins = home / ".config" / "herdr" / "plugins.json"
-    entry = None
+    linked = []
     if plugins.exists():
         try:
-            entry = next((p for p in json.loads(plugins.read_text()) if p.get("plugin_id") == PLUGIN_ID), None)
+            linked = json.loads(plugins.read_text())
         except ValueError:
-            entry = None
+            pass
+    entry = next((p for p in linked if p.get("plugin_id") == PLUGIN_ID), None)
+    old = next((p.get("plugin_id") for p in linked if p.get("plugin_id") in OLD_PLUGIN_IDS), None)
+    if entry is None and old:
+        check(False, "", f"Herdr terminal-UI plugin is linked under its old id {old}: run ./install.sh")
+    config = home / ".config" / "herdr" / "config.toml"
+    text = config.read_text() if config.exists() else ""
+    for old_id in OLD_PLUGIN_IDS:
+        if f"{old_id}.open" in text:
+            check(False, "", f"{config} binds {old_id}.open: change it to {PLUGIN_ID}.open, "
+                  "then run `herdr server reload-config`")
     if entry is None:
         print("  --  Herdr terminal-UI plugin not linked (optional)")
     else:

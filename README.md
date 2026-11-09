@@ -63,7 +63,7 @@ Copy-Item -Recurse -Force "$env:TEMP\herdr-htask\mods\htask" "$HOME\.config\herd
 
 Then open a space on the SSH machine and do the two steps above.
 
-**Herdr terminal UI:** bind a key to the plugin action `calvin.htask.open`
+**Herdr terminal UI:** bind a key to the plugin action `calvinp0.htask.open`
 (see [reference](docs/reference.md#terminal-ui)).
 
 ## Using it

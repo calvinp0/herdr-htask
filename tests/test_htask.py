@@ -340,6 +340,22 @@ class Doctor(Base):
         self.assertEqual(out.returncode, 0, out.stdout)
         self.assertIn("all good", out.stdout)
 
+    def test_flags_the_old_plugin_id(self):
+        home = Path(self.tmp.name)
+        (home / ".local" / "bin").mkdir(parents=True)
+        (home / ".local" / "bin" / "htask").symlink_to(HTASK)
+        (home / ".local" / "bin" / "htask-claude-inbox").symlink_to(HTASK.parent / "hooks" / "claude-inbox.sh")
+        herdr = home / ".config" / "herdr"
+        herdr.mkdir(parents=True)
+        (herdr / "plugins.json").write_text(json.dumps(
+            [{"plugin_id": "calvin.htask", "plugin_root": str(HTASK.parent)}]))
+        (herdr / "config.toml").write_text('[[keys.command]]\ncommand = "calvin.htask.open"\n')
+        self.env["HOME"] = str(home)
+        out = self.run_htask("doctor", check=False)
+        self.assertEqual(out.returncode, 1, out.stdout)
+        self.assertIn("linked under its old id calvin.htask: run ./install.sh", out.stdout)
+        self.assertIn("change it to calvinp0.htask.open", out.stdout)
+
 
 class TuiArchived(unittest.TestCase):
     def test_archived_section_only_when_toggled(self):

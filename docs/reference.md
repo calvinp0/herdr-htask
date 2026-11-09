@@ -80,7 +80,7 @@ Bind a key in `~/.config/herdr/config.toml`, then run `herdr server reload-confi
 [[keys.command]]
 key = "prefix+t"
 type = "plugin_action"
-command = "calvin.htask.open"
+command = "calvinp0.htask.open"
 description = "open task panel"
 ```
 

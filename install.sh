@@ -29,7 +29,8 @@ fi
 
 # Herdr terminal UI: link the plugin to this folder (unlinking first moves an old link).
 if command -v herdr >/dev/null 2>&1; then
-  herdr plugin unlink calvin.htask >/dev/null 2>&1 || true
+  # calvin.htask is the id before 0.2.4.
+  for id in calvinp0.htask calvin.htask; do herdr plugin unlink "$id" >/dev/null 2>&1 || true; done
   if herdr plugin link "$repo" >/dev/null 2>&1; then
     echo "linked the Herdr terminal-UI plugin to $repo"
   else

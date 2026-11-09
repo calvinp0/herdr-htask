@@ -1,6 +1,6 @@
-id = "calvin.htask"
+id = "calvinp0.htask"
 name = "htask"
-version = "0.2.3"
+version = "0.2.4"
 min_herdr_version = "0.9.0"
 description = "Right-hand panel showing what agents have done and what's left, from a shared SQLite task list."
 platforms = ["linux", "macos"]
