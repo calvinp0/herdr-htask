@@ -18,7 +18,7 @@ echo "linked $bin/htask and $bin/htask-claude-inbox -> $repo"
 app="${HERDR_APP_HOME:-$HOME/.config/herdr-app}"
 if [ -d "$app" ]; then
   mkdir -p "$app/mods/htask"
-  for f in "$repo"/herdr-app/mods/htask/*; do
+  for f in "$repo"/mods/htask/*; do
     cp "$f" "$app/mods/htask/"
   done
   echo "copied the desktop-app mod to $app/mods/htask"

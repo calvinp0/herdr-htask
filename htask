@@ -372,7 +372,7 @@ def cmd_doctor(args) -> None:
     app_mod = Path(os.environ.get("HERDR_APP_HOME", home / ".config" / "herdr-app")) / "mods" / "htask"
     if app_mod.exists():
         digest = lambda f: hashlib.sha256(f.read_bytes()).hexdigest()
-        stale = [f.name for f in (repo / "herdr-app" / "mods" / "htask").iterdir()
+        stale = [f.name for f in (repo / "mods" / "htask").iterdir()
                  if not (app_mod / f.name).exists() or digest(f) != digest(app_mod / f.name)]
         check(not stale, "desktop-app mod matches this checkout",
               f"desktop-app mod is out of date ({', '.join(stale)}): run ./install.sh")

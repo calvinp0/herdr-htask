@@ -3,7 +3,7 @@
 // Both read htask (one SQLite DB for every agent) and redraw when it writes or focus changes repo.
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, Scrollbar, InputState, Input } from "gpui-base";
-import { theme, props, run, agents, terminals, hc, notify, nextCommand } from "herdr";
+import { theme, props, run, agents, terminals, hc, notify, nextCommand, closeOverlay } from "herdr";
 import { htask, htaskError, qualify, location, watchSignal } from "./common.js";
 import { Chip } from "./chip.js";
 
@@ -296,6 +296,12 @@ class Panel {
         .when(done > 0, (e) => e.child(div().id("htask-archive").px(6).py(2).rounded(5).text_size(11).cursor_pointer()
           .text_color(t.muted).hover((s) => s.bg(t.hover)).tooltip("Archive this repo's done tasks (htask clean --days 0)")
           .on_click((_e, cx) => this.htask(["clean", "--days", "0"], cx)).child("Archive")))
+        // Opened as a window (a layout with no panel block): a close button. Stopping the press
+        // keeps it from dragging the window instead.
+        .when(Boolean(props()?.overlay), (e) => e.child(div().id("htask-close").size(22).flex().items_center()
+          .justify_center().rounded(5).cursor_pointer().text_color(t.muted).hover((s) => s.bg(t.hover))
+          .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+          .on_click((_e, cx) => { cx.stop_propagation(); closeOverlay(props().overlay); }).child("×")))
         )
       .child(div().mx(14).h(3).flex_none().rounded(2).bg(t.border)
         .child(div().h_full().rounded(2).bg(t.done).w(counted.length ? barWidth * done / counted.length : 0)))

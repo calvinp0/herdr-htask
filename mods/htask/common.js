@@ -1,5 +1,5 @@
 // Shared by the panel (main.js) and the status chip (chip.js).
-import { spaces, panes, focused, home, layout, run, exec, watchFolder } from "herdr";
+import { spaces, panes, focused, home, layout, run, exec, watchFolder, openOverlay } from "herdr";
 
 export const HTASK = () => `${home()}/.local/bin/htask`;
 
@@ -43,15 +43,50 @@ export function find(node, id) {
   return null;
 }
 
-// Is the Tasks panel showing? (The fleet layout's right column "panel", stack "panel-body".)
-export function panelShown() {
-  const root = layout(), panel = find(root, "panel"), body = find(root, "panel-body");
-  return Boolean(panel && !panel.hidden && body?.active === "htask");
+// Where the panel is in the shown layout, with no assumptions about ids: the htask block that is
+// the panel (not the chip), its stack if it is one of a stack's children, and the nodes above it.
+// null when the layout has no panel block.
+function panelSpot() {
+  const path = [];
+  const walk = (node) => {
+    if (!node) return false;
+    path.push(node);
+    if (node.type === "block" && node.content?.mod === "htask" && !node.content?.props?.view) return true;
+    for (const child of node.children ?? []) if (walk(child)) return true;
+    path.pop();
+    return false;
+  };
+  if (!walk(layout())) return null;
+  const block = path[path.length - 1], parent = path[path.length - 2];
+  const stack = parent?.type === "stack" ? parent : null;
+  // What to hide: climb from the stack (or the block) while the parent holds nothing else, so the
+  // whole side column goes, not just its contents. Never the root.
+  let i = path.length - (stack ? 2 : 1);
+  while (i > 1 && (path[i - 1].children ?? []).length === 1) i -= 1;
+  return { block, stack, above: path.slice(1, -1), container: path[i] };
 }
 
+// Is the Tasks panel showing?
+export function panelShown() {
+  const spot = panelSpot();
+  if (!spot || spot.block.hidden || spot.above.some((node) => node.hidden)) return false;
+  return !spot.stack || spot.stack.active === spot.block.id;
+}
+
+// Show or hide the panel. A layout without a panel block gets it as a floating window instead,
+// with a close button (one window: opening it again replaces it).
 export function togglePanel() {
-  if (panelShown()) run("layout.hide", { id: "panel" });
-  else { run("layout.select", { stack: "panel-body", child: "htask" }); run("layout.show", { id: "panel" }); }
+  const spot = panelSpot();
+  if (!spot) {
+    openOverlay({ mod: "htask", kind: "window", key: "htask", width: 380, height: 640 });
+    return;
+  }
+  if (panelShown()) {
+    run("layout.hide", { id: spot.container.id });
+    return;
+  }
+  if (spot.stack) run("layout.select", { stack: spot.stack.id, child: spot.block.id });
+  for (const node of [...spot.above, spot.block]) if (node.hidden && node.id) run("layout.show", { id: node.id });
 }
 
 // Re-run `load` whenever htask writes, for as long as this copy lives.

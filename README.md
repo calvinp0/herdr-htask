@@ -6,7 +6,7 @@ what they're working on, what's blocked, and what's left. Agents record tasks wi
 repo's tasks, and updates as soon as any agent writes.
 
 <p align="center">
-  <img src="docs/panel.png" width="420" alt="The Tasks panel in the Herdr desktop app: To do, Done and Archived filter chips, a blocked task with its reason, a task in progress, two to-do tasks, the five most recent done tasks and three archived ones, with a Tasks 7/11 button and a red dot in the tab bar">
+  <img src="preview.png" width="420" alt="The Tasks panel in the Herdr desktop app: To do, Done and Archived filter chips, a blocked task with its reason, a task in progress, two to-do tasks, the five most recent done tasks and three archived ones, with a Tasks 7/11 button and a red dot in the tab bar">
 </p>
 
 The panel showing this repo's own tasks. The status bar gets a chip with the same count and how
@@ -64,23 +64,26 @@ Nothing outside the checkout names the checkout: agents run `htask`, and the Cla
 
 ## Herdr desktop app
 
-`install.sh` copies the mod into `~/.config/herdr-app/mods/htask` and checks it. Then add it to
-your layout. Shipped layouts are read-only, so do this in your own copy
+`install.sh` copies the mod into `~/.config/herdr-app/mods/htask` and checks it. Or ask the agent
+running in Herdr: *"Read ~/.config/herdr-app/AGENTS.md, then add this mod:
+https://github.com/calvinp0/herdr-htask"*. It follows [RECIPE.md](RECIPE.md).
+
+Then add it to your layout. Shipped layouts are read-only, so do this in your own copy
 (`herdr-app do layout.clone '{"name":"main","as":"my-layout"}'`), in
 `~/.config/herdr-app/layouts/<layout>.json`:
 
-1. **The panel.** Add `{ "id": "htask", "type": "block", "content": { "mod": "htask" } }` where
-   you want it, for example as a child of a right-hand stack (`"type": "stack"`) next to Files
-   and Changes.
-2. **The status-bar chip** (needed for blocked-task toasts and the badge). Add it to your status
+1. **The status-bar chip** (needed for blocked-task toasts and the badge). Add it to your status
    row: `{ "id": "status-htask", "type": "block", "content": { "mod": "htask", "props": { "view": "chip" } }, "size": { "weight": 1.3 }, "min": 96 }`.
    It shows done/total for the focused repo and how many tasks are blocked. Click it to show or
-   hide the panel. It assumes a column with id `panel` holding a stack `panel-body`; change
-   `togglePanel()` in `common.js` if your layout differs.
-3. **A tab-bar button** (optional). If your tab bar mod draws panel buttons, add one that runs
-   `layout.select {stack: "panel-body", child: "htask"}` and `layout.show {id: "panel"}`. The chip
-   publishes `shared("htask.summary")` = `{project, done, total, blocked}` for a `2/5` badge and
-   a dot while anything is blocked.
+   hide the panel.
+2. **The panel** (optional). Add `{ "id": "htask", "type": "block", "content": { "mod": "htask" } }`
+   where you want it, for example as a child of a right-hand stack next to Files and Changes. The
+   chip finds it wherever it is: it selects it in its stack and shows what was hiding it. Without a
+   panel block, the chip opens the panel as a floating window instead.
+3. **A tab-bar button** (optional). If your tab bar mod draws panel buttons, add one that selects
+   the htask block in its stack and shows the stack's column. The chip publishes
+   `shared("htask.summary")` = `{project, done, total, blocked}` for a `2/5` badge and a dot while
+   anything is blocked.
 
 In the panel:
 

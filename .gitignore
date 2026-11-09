@@ -2,6 +2,6 @@ __pycache__/
 *.db
 *.db-wal
 *.db-shm
-herdr-app/mods/*/gpui-kit.d.ts
-herdr-app/mods/*/jsconfig.json
+mods/*/gpui-kit.d.ts
+mods/*/jsconfig.json
 .axiomcode/
