@@ -356,6 +356,14 @@ class TodoToggle(unittest.TestCase):
         self.assertIn("TO DO", titles())
         self.assertNotIn("TO DO", titles(show_todo=False))
 
+    def test_dropped_only_when_toggled(self):
+        from importlib.machinery import SourceFileLoader
+        htask = SourceFileLoader("htask_module", str(HTASK)).load_module()
+        tasks = [{"id": 1, "status": "dropped", "pane_id": None, "completed_at": None, "updated_at": 1}]
+        titles = lambda **kw: [t for t, _, _ in htask.order_tasks(tasks, None, True, **kw)]
+        self.assertNotIn("DROPPED", titles())
+        self.assertIn("DROPPED", titles(show_dropped=True))
+
 
 class ThisPaneMarker(unittest.TestCase):
     def setUp(self):

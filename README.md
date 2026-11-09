@@ -88,19 +88,20 @@ Then add it to your layout. Shipped layouts are read-only, so do this in your ow
 In the panel:
 
 - click a task to see its description, its agent and when it last changed, plus buttons for
-  Start, Done, Unblock, Drop or Reopen;
+  Start, Block, Done, Unblock, Drop or Reopen (blocking from the panel has no reason; agents and
+  `htask block <id> -m "..."` can give one);
 - click a task's status dot to mark it done, or to reopen it;
 - type in the box at the bottom and press Enter to add a task for the next agent;
 - in-progress and blocked tasks show their agent's live state (`t6 working`). Click it to jump to
   that terminal. If the agent has exited or its terminal has closed, the task says so;
-- the **To do**, **Done** and **Archived** chips show or hide those sections (Blocked and In
-  progress always show); the panel remembers them. Done shows the five most recent tasks;
-  Archived shows archived tasks newest first;
+- the **To do**, **Done**, **Dropped** and **Archived** chips show or hide those sections (Blocked
+  and In progress always show; Dropped and Archived start hidden); the panel remembers them. Done
+  shows the five most recent tasks, with **Show N more** / **Show fewer** under them;
 - **Archive** in the header puts away all of this repo's done tasks; a done or dropped task's own
   **Archive** button puts away just that one. Reopen an archived task to bring it back.
 
-The chips can be keys too: bind `htask.toggle-todo`, `htask.toggle-done` or
-`htask.toggle-archived` in `~/.config/herdr-app/keys.json`, for example
+The chips can be keys too: bind `htask.toggle-todo`, `htask.toggle-done`, `htask.toggle-dropped`
+or `htask.toggle-archived` in `~/.config/herdr-app/keys.json`, for example
 `"global": { "ctrl-alt-t": "htask.toggle-todo" }`.
 
 Spaces on SSH machines run htask on that machine, against that machine's own database. Install
@@ -118,7 +119,7 @@ command = "calvin.htask.open"
 description = "open task panel"
 ```
 
-Panel keys: `j`/`k` scroll, `t` show or hide to-do tasks, `d` done tasks, `a` archived tasks,
+Panel keys: `j`/`k` scroll, `t` show or hide to-do tasks, `d` done, `x` dropped, `a` archived,
 `v` descriptions, `q` close.
 
 For progress in the sidebar, add the `$tasks` token (done/total for the agent's repo, updated

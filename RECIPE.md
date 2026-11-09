@@ -24,11 +24,13 @@ the agent that owns the task.
   - Header, 42px: **Tasks**, the repo name in a small bordered tag, `done/total` in `muted` at 11px,
     and an **Archive** text button when there are done tasks. Opened as a window, a `×` at the right.
   - A 3px progress bar, `border` track with a `done`-colored fill, 14px side margins.
-  - Filter chips, 11px, fully rounded: **To do**, **Done**, **Archived**. On: `raised` background,
+  - Filter chips, 11px, fully rounded: **To do**, **Done**, **Dropped**, **Archived** (the last two
+    off by default). On: `raised` background,
     `foreground` text, `border` outline. Off: transparent, `dim` text.
   - Sections in this order, each with an uppercase 10.5px `dim` heading and count: **BLOCKED**,
-    **IN PROGRESS**, **TO DO**, **DONE** (the five most recent, then `+N more (Archive to clear)`),
-    **ARCHIVED** (newest first, only with its chip on). Blocked and In progress always show.
+    **IN PROGRESS**, **TO DO**, **DONE** (the five most recent, then an `accent` **Show N more**
+    link that expands it and becomes **Show fewer**), **DROPPED** (newest first, muted) and
+    **ARCHIVED** (newest first), each only with its chip on. Blocked and In progress always show.
   - Each task row: a 14px status mark (to do: hollow ring in `muted`; in progress: the workspace
     spinner in `working`, spinning; blocked: filled dot in `blocked`; done: a check in `done`),
     the title (truncated until opened), `#id` in `dim` on the right. A note shows under the title as
@@ -46,15 +48,16 @@ the agent that owns the task.
   (this panel, Files) keeps the last repo. It redraws when `htask` writes (it watches
   `~/.local/share/herdr-tasks/signal/`), with a 15 s backstop; remote spaces poll every 5 s.
 - Click a task to open it: description, agent, terminal, "updated 5m ago", and buttons by status:
-  to do: Start, Done, Drop; in progress: Done, Back to to-do, Drop; blocked: Unblock, Done, Drop;
+  to do: Start, Block, Done, Drop; in progress: Done, Block, Back to to-do, Drop;
+  blocked: Unblock, Done, Drop;
   done and dropped: Reopen, Archive. Click the status mark to mark done (or reopen a done task).
   Click a live agent tag to focus that agent.
 - Every change you make runs `htask --by you ...`. If the task belongs to a live agent: Claude Code
   hears about it from its inbox hook at its next step (a toast says so); any other agent gets a
   `[Herdr task panel] ...` message typed into its terminal with `hc send`, which refuses while the
   agent waits on a question (a toast then offers to take you there).
-- Chips toggle sections and are remembered per panel. Keys can send `htask.toggle-todo`,
-  `htask.toggle-done`, `htask.toggle-archived`.
+- Chips toggle sections and are remembered per panel, as is Done's expanded state. Keys can send
+  `htask.toggle-todo`, `htask.toggle-done`, `htask.toggle-dropped`, `htask.toggle-archived`.
 - The chip toggles the panel: it finds the panel block anywhere in the layout, selects it in its stack
   and shows hidden ancestors, or hides the outermost container that holds only the panel. With no
   panel block in the layout, it opens the panel as a floating window (`key: "htask"`).

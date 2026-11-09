@@ -13,10 +13,10 @@ const COLOR = { doing: "working", blocked: "blocked", todo: "muted", done: "done
 // How many done tasks the Done section shows; the rest are a "+N more" line (Archive clears them).
 const DONE_SHOWN = 5;
 
-// The panel's sections in display order, as [title, rows, hidden count]. Empty ones are skipped.
-// Blocked comes first because it needs you. Within each open section, the focused terminal's
-// tasks come first, then the rest of the repo's in id order (sort is stable). Done shows the
-// newest few. Dropped tasks don't show (htask list --all and Archive still see them).
+// The panel's sections in display order, as [title, rows, hidden count, can collapse]. Empty ones
+// are skipped. Blocked comes first because it needs you. Within each open section, the focused
+// terminal's tasks come first, then the rest of the repo's in id order (sort is stable). Done shows
+// the newest few until show.allDone; Dropped shows only with its chip on.
 export function sections(tasks, terminal, show, machine) {
   const mine = (task) => Boolean(terminal) && qualify(machine, task.pane_id) === terminal;
   const by = (status) => tasks.filter((task) => task.status === status)
@@ -26,7 +26,12 @@ export function sections(tasks, terminal, show, machine) {
   if (show.done) {
     const done = tasks.filter((task) => task.status === "done")
       .sort((a, b) => (b.completed_at ?? 0) - (a.completed_at ?? 0));
-    out.push(["Done", done.slice(0, DONE_SHOWN), Math.max(0, done.length - DONE_SHOWN)]);
+    const rows = show.allDone ? done : done.slice(0, DONE_SHOWN);
+    out.push(["Done", rows, done.length - rows.length, done.length > DONE_SHOWN]);
+  }
+  if (show.dropped) {
+    out.push(["Dropped", tasks.filter((task) => task.status === "dropped")
+      .sort((a, b) => (b.updated_at ?? 0) - (a.updated_at ?? 0)), 0]);
   }
   return out;
 }
@@ -50,8 +55,8 @@ const OWNER_WORD = { exited: "agent exited", gone: "terminal closed" };
 
 // The buttons an expanded task offers, by status: [label, htask command].
 const ACTIONS = {
-  todo: [["Start", "start"], ["Done", "done"], ["Drop", "drop"]],
-  doing: [["Done", "done"], ["Back to to-do", "reopen"], ["Drop", "drop"]],
+  todo: [["Start", "start"], ["Block", "block"], ["Done", "done"], ["Drop", "drop"]],
+  doing: [["Done", "done"], ["Block", "block"], ["Back to to-do", "reopen"], ["Drop", "drop"]],
   blocked: [["Unblock", "reopen"], ["Done", "done"], ["Drop", "drop"]],
   done: [["Reopen", "reopen"], ["Archive", "archive"]],
   dropped: [["Reopen", "reopen"], ["Archive", "archive"]],
@@ -63,6 +68,7 @@ const TELL = {
   drop: (ref) => `${ref} is dropped. Stop working on it.`,
   reopen: (ref, task) => (task.status === "blocked" ? `${ref} is unblocked. You can carry on with it.` : `${ref} is back in to-do.`),
   start: (ref) => `${ref} is marked in progress.`,
+  block: (ref) => `${ref} is marked blocked. Hold off on it until the human unblocks it.`,
 };
 
 function ago(seconds) {
@@ -74,8 +80,8 @@ function ago(seconds) {
 }
 
 // The filter chips under the progress bar, in order. Blocked and In progress always show.
-const FILTERS = [["todo", "To do"], ["done", "Done"], ["archived", "Archived"]];
-const DEFAULT_SHOW = { todo: true, done: true, archived: false };
+const FILTERS = [["todo", "To do"], ["done", "Done"], ["dropped", "Dropped"], ["archived", "Archived"]];
+const DEFAULT_SHOW = { todo: true, done: true, dropped: false, archived: false, allDone: false };
 
 function loadShow() {
   try { return { ...DEFAULT_SHOW, ...JSON.parse(localStorage.getItem("show") ?? "{}") }; }
@@ -92,7 +98,7 @@ class Panel {
     cx.spawn(async (cx) => {
       for (;;) {
         const c = await nextCommand();
-        const name = /^toggle-(todo|done|archived)$/.exec(c)?.[1];
+        const name = /^toggle-(todo|done|dropped|archived)$/.exec(c)?.[1];
         if (name) this.flip(name, cx);
       }
     });
@@ -250,7 +256,7 @@ class Panel {
       .on_click((_e, cx) => this.toggle(task.id, cx))
       .child(h_flex().gap(8).items_start()
         .child(this.dot(task, t))
-        .child(div().flex_1().min_w(0).text_color(done ? t.muted : t.foreground).when(!open, (e) => e.truncate()).child(task.title))
+        .child(div().flex_1().min_w(0).text_color(done || task.status === "dropped" ? t.muted : t.foreground).when(!open, (e) => e.truncate()).child(task.title))
         .when(label, (e) => e.child(div().h(19).flex().items_center().text_size(10).text_color(t.accent).child("this terminal")))
         .when(Boolean(own) && !mine, (e) => e.child(this.ownerTag(task, own, t)))
         .child(div().h(19).flex().items_center().text_size(10.5).text_color(t.dim).child(`#${task.id}`)))
@@ -316,10 +322,14 @@ class Panel {
         })))
       .child(div().flex_1().min_h(0).relative().mt(8)
         .child(v_flex().id("htask-list").absolute().inset_0().overflow_y_scroll().px(6).pb(8)
-          .children(shown.map(([title, rows, more]) => v_flex().flex_none()
+          .children(shown.map(([title, rows, more, collapsible]) => v_flex().flex_none()
             .child(div().px(8).pt(8).pb(3).text_size(10.5).font_semibold().text_color(t.dim).child(`${title.toUpperCase()}  ${rows.length + more}`))
             .children(rows.map((task) => this.row(task, t)))
-            .when(more > 0, (e) => e.child(div().px(8).pl(30).py(3).text_size(11).text_color(t.dim).child(`+${more} more (Archive to clear)`)))))
+            // Done's "Show N more" / "Show fewer" (remembered with the chips).
+            .when(Boolean(collapsible), (e) => e.child(div().id(`more-${title}`).ml(30).mr(8).my(2).px(4).py(2).rounded(5)
+              .text_size(11).text_color(t.accent).cursor_pointer().hover((st) => st.bg(t.hover))
+              .on_click((_e, cx) => this.flip("allDone", cx))
+              .child(more > 0 ? `Show ${more} more` : "Show fewer")))))
           .when(this.show.archived && !this.archived.length && Boolean(this.project) && !this.loading, (e) => e.child(
             div().px(8).pt(8).text_size(11).text_color(t.dim).child(`Nothing archived in ${name}.`)))
           .when(!shown.length, (e) => e.child(v_flex().p(8).gap(6).text_color(t.dim)

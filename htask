@@ -604,7 +604,8 @@ DONE_SHOWN = 5  # done tasks shown; the rest are a "+N more" line (htask clean c
 
 
 def order_tasks(tasks: list[sqlite3.Row], focused_pane_id: str | None,
-                show_done: bool, show_todo: bool = True) -> list[tuple[str, list[sqlite3.Row], int]]:
+                show_done: bool, show_todo: bool = True,
+                show_dropped: bool = False) -> list[tuple[str, list[sqlite3.Row], int]]:
     """The panel's sections in display order, as (title, rows, hidden count).
 
     Same policy as the app panel's sections(): Blocked first because it needs
@@ -622,6 +623,9 @@ def order_tasks(tasks: list[sqlite3.Row], focused_pane_id: str | None,
         done = sorted((t for t in tasks if t["status"] == "done"),
                       key=lambda t: t["completed_at"] or 0, reverse=True)
         sections.append(("DONE", done[:DONE_SHOWN], max(0, len(done) - DONE_SHOWN)))
+    if show_dropped:
+        sections.append(("DROPPED", sorted((t for t in tasks if t["status"] == "dropped"),
+                                           key=lambda t: t["updated_at"] or 0, reverse=True), 0))
     return sections
 
 
@@ -648,7 +652,7 @@ def _panel(scr, args) -> None:
 
     conn = connect()
     ctx, last_poll, last_version = None, 0.0, None
-    show_done, show_desc, show_archived, show_todo, scroll = True, True, False, True, 0
+    show_done, show_desc, show_archived, show_todo, show_dropped, scroll = True, True, False, True, False, 0
     lines: list[tuple[str, int]] = []
     dirty = True
 
@@ -670,7 +674,7 @@ def _panel(scr, args) -> None:
             tasks = fetch_tasks(conn, project)
             archived = sorted(fetch_tasks(conn, project, archived=True),
                               key=lambda t: t["archived_at"] or 0, reverse=True) if show_archived else None
-            lines = _render(tasks, project, ctx, w, show_done, show_desc, color, archived, show_todo)
+            lines = _render(tasks, project, ctx, w, show_done, show_desc, color, archived, show_todo, show_dropped)
             dirty = False
         scroll = max(0, min(scroll, len(lines) - h))
         scr.erase()
@@ -694,6 +698,8 @@ def _panel(scr, args) -> None:
             show_archived, dirty = not show_archived, True
         elif key == ord("t"):
             show_todo, dirty = not show_todo, True
+        elif key == ord("x"):
+            show_dropped, dirty = not show_dropped, True
         elif key == ord("v"):
             show_desc, dirty = not show_desc, True
         elif key == curses.KEY_RESIZE:
@@ -701,7 +707,7 @@ def _panel(scr, args) -> None:
 
 
 def _render(tasks, project, ctx, width, show_done, show_desc, color, archived=None,
-            show_todo=True) -> list[tuple[str, int]]:
+            show_todo=True, show_dropped=False) -> list[tuple[str, int]]:
     import curses
     width = max(width - 1, 20)
     open_ = [t for t in tasks if t["status"] not in ("done", "dropped")]
@@ -716,7 +722,7 @@ def _render(tasks, project, ctx, width, show_done, show_desc, color, archived=No
         ("█" * filled + "░" * (bar_w - filled) + f" {len(done)}/{total}", color["done"]),
         ("", 0),
     ]
-    sections = order_tasks(tasks, ctx.get("pane_id"), show_done, show_todo)
+    sections = order_tasks(tasks, ctx.get("pane_id"), show_done, show_todo, show_dropped)
     # "›" (this pane's task) only tells tasks apart when the open ones come from more than one
     # pane, and never on finished rows.
     mixed = len({t["pane_id"] for t in tasks if t["status"] not in ("done", "dropped") and t["pane_id"]}) > 1
@@ -751,7 +757,7 @@ def _render(tasks, project, ctx, width, show_done, show_desc, color, archived=No
         for t in archived:
             out.append((f" {STATUS_GLYPH[t['status']]} #{t['id']} {t['title']}", curses.A_DIM))
         out.append(("", 0))
-    out.append(("q quit  j/k scroll  t to-do  d done  a archived  v details", curses.A_DIM))
+    out.append(("q quit  j/k scroll  t to-do  d done  x dropped  a archived  v details", curses.A_DIM))
     return out
 
 
