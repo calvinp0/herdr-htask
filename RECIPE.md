@@ -17,6 +17,8 @@ the agent that owns the task.
 - **needs the `htask` CLI installed first:** clone the repo and run `./install.sh` (Python 3.10+,
   standard library only). Without it the chip shows a red `htask ✗`.
 - reaches no network.
+- On Windows the htask CLI doesn't run: the mod uses htask on the machines the app connects to over
+  SSH, and for the PC's own spaces shows a plain "Tasks" chip (no red error).
 
 ## What you see
 

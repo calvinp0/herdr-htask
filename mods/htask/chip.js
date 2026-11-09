@@ -4,7 +4,7 @@
 import { div, svg } from "gpui-kit";
 import { h_flex } from "gpui-base";
 import { notify, shared, setShared, theme } from "herdr";
-import { htask, htaskError, qualify, SUMMARY_KEY, location, togglePanel, panelShown, watchSignal } from "./common.js";
+import { htask, htaskError, qualify, SUMMARY_KEY, location, togglePanel, panelShown, watchSignal, NOT_HERE } from "./common.js";
 
 // Blocked task ids already announced, one list per machine (ids are per machine's DB).
 // Persisted, so a restart doesn't repeat them; an id leaves its list once the task is unblocked,
@@ -86,7 +86,8 @@ export class Chip {
 
     const t = theme(), s = shared(SUMMARY_KEY), on = panelShown();
     const blocked = this.summary?.blocked ?? [];
-    const tip = this.error ? `htask: ${this.error}\nRun htask doctor (or ./install.sh in the htask folder).`
+    const tip = this.error === NOT_HERE ? NOT_HERE
+      : this.error ? `htask: ${this.error}\nRun htask doctor (or ./install.sh in the htask folder).`
       : blocked.length ? `Blocked:\n${blocked.map((b) => `${name(b.project)} #${b.id} ${b.title}`).join("\n")}`
       : s?.total ? `${s.done} of ${s.total} tasks done in ${name(s.project)}` : "No tasks in this repo";
     return h_flex().id("htask-chip").size_full().px(8).gap(6).items_center().cursor_pointer().text_size(11.5)
@@ -95,7 +96,9 @@ export class Chip {
       .on_click(() => togglePanel()).tooltip(tip)
       .child(svg("mods/htask/htask.svg").size(13).flex_none())
       // A broken install (htask moved, missing on a remote machine) shows here, not just in the tooltip.
-      .child(this.error
+      .child(this.error === NOT_HERE
+        ? div().flex_none().text_color(t.dim).child("Tasks")
+        : this.error
         ? div().flex_none().text_color(t.blocked).child("htask ✗")
         : div().flex_none().child(s?.total ? `${s.done}/${s.total}` : "Tasks"))
       .when(blocked.length > 0, (el) => el.child(h_flex().flex_none().gap(4).items_center().text_color(t.blocked)

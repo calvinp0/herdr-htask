@@ -1,11 +1,17 @@
 // Shared by the panel (main.js) and the status chip (chip.js).
-import { spaces, panes, focused, home, layout, run, exec, watchFolder, openOverlay } from "herdr";
+import { spaces, panes, focused, home, layout, run, exec, watchFolder, openOverlay, window } from "herdr";
 
 export const HTASK = () => `${home()}/.local/bin/htask`;
 
 // Run htask for a space: here, or on its SSH machine through herdr-core. The remote copy is
 // looked for in that machine's ~/.local/bin, then on its PATH; each machine has its own DB.
+// The htask CLI runs on Linux and macOS. The app on Windows uses it on the machines it connects to
+// over SSH; for the PC's own spaces there's nothing to run, and that isn't an error worth red.
+export const NOT_HERE = "htask isn't on this computer (Windows). Spaces on a machine that has it work.";
+export const notHere = (machine) => !machine && window()?.platform === "windows";
+
 export function htask(machine, args) {
+  if (notHere(machine)) return Promise.resolve({ code: 127, stdout: "", stderr: NOT_HERE });
   if (!machine) return exec(HTASK(), args, { timeout: 10000 });
   const script = 'h="$HOME/.local/bin/htask"; [ -x "$h" ] || h=htask; exec "$h" "$@"';
   return exec("sh", ["-lc", script, "htask", ...args], { on: machine, timeout: 15000 });
@@ -14,6 +20,7 @@ export function htask(machine, args) {
 // The error to show when htask failed: say so plainly when it isn't installed there.
 export function htaskError(machine, r) {
   const text = (r.stderr || r.stdout || "").trim();
+  if (text === NOT_HERE) return text;
   if (machine && (r.code === 127 || /not found/.test(text)))
     return `htask isn't installed on ${machine}. Copy it to ~/.local/bin/htask there.`;
   return text || `htask exited with ${r.code}`;

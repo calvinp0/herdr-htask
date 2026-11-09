@@ -73,6 +73,28 @@ Nothing outside the checkout names the checkout: agents run `htask`, and the Cla
   matches the checkout, and says what to run when something is off. If htask can't run, the
   status chip shows a red `htask ✗`.
 
+## Herdr app on Windows
+
+The `htask` CLI runs on Linux and macOS. On Windows, the Herdr app only needs the panel mod: your
+agents run on the machines you connect to over SSH, and the panel runs htask **there** when you
+focus one of their spaces.
+
+1. **On each machine you SSH into** (where agents run), install htask as above:
+   `./install.sh && htask connect all`.
+2. **On Windows**, copy the mod into the app's home (by default `%USERPROFILE%\.config\herdr-app`,
+   the folder with the app's `AGENTS.md`), in PowerShell:
+
+   ```powershell
+   git clone https://github.com/calvinp0/herdr-htask "$env:TEMP\herdr-htask"
+   Copy-Item -Recurse -Force "$env:TEMP\herdr-htask\mods\htask" "$HOME\.config\herdr-app\mods\"
+   ```
+
+   The Tasks panel docks on the right the first time the app sees it. For blocked-task toasts and
+   the count, also add the status-bar chip to your layout (below).
+3. Add the machine in the app (Settings → Machines) if it isn't there yet, and open a space on it.
+
+Spaces on the Windows PC itself show a plain "Tasks" chip: there's no htask there to read.
+
 ## Herdr desktop app
 
 `install.sh` copies the mod into `~/.config/herdr-app/mods/htask` and checks it. Or ask the agent
