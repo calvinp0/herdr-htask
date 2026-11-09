@@ -190,9 +190,9 @@ class Panel {
   }
 
   // Change a task's status, then tell the agent working on it, if one still is.
-  change(task, cmd, cx) {
+  change(task, cmd, cx, extra = []) {
     const own = owner(task, this.machine);
-    this.htask([cmd, String(task.id)], cx, (cx) => this.tell(task, cmd, own, cx));
+    this.htask([cmd, String(task.id), ...extra], cx, (cx) => this.tell(task, cmd, own, cx));
   }
 
   // Claude sessions hear about it from the inbox hook on their next step, without a new turn.
@@ -250,9 +250,13 @@ class Panel {
           ? svg("mods/htask/check.svg").size(12).text_color(color)
           : div().size(9).rounded(5).bg(color);
     const next = task.status === "done" || task.status === "dropped" ? "reopen" : "done";
+    // Finishing before an earlier task is done takes "Done anyway" in the open task, not a stray click.
+    const held = next === "done" && (task.waiting ?? []).length > 0;
     return h_flex().id(`dot-${task.id}`).w(14).h(19).flex_none().items_center().justify_center().rounded(4)
-      .hover((s) => s.bg(t.raised)).tooltip(next === "done" ? "Mark done" : "Reopen")
-      .on_click((_e, cx) => { cx.stop_propagation(); this.change(task, next, cx); })
+      .hover((s) => s.bg(t.raised))
+      .tooltip(held ? `Comes after ${task.waiting.map((d) => `#${d}`).join(", ")}: open it for Done anyway`
+        : next === "done" ? "Mark done" : "Reopen")
+      .on_click((_e, cx) => { cx.stop_propagation(); if (!held) this.change(task, next, cx); })
       .child(mark);
   }
 
@@ -403,7 +407,11 @@ class Panel {
           (cx) => this.toggleMenu(task, "run", cx))))
         .when(live, (e) => e.child(button("explain", open("explain") ? "▾ Explain…" : "? Explain…",
           (cx) => this.toggleMenu(task, "explain", cx))))
-        .children((ACTIONS[task.status] ?? []).map(([label, cmd]) => button(cmd, label, (cx) => this.change(task, cmd, cx)))))
+        .children((ACTIONS[task.status] ?? []).map(([label, cmd]) => {
+          const held = cmd === "done" && (task.waiting ?? []).length > 0;
+          return held ? button(cmd, "Done anyway", (cx) => this.change(task, cmd, cx, ["--force"]))
+            : button(cmd, label, (cx) => this.change(task, cmd, cx));
+        })))
       .when(open("run") && task.status === "todo", (e) => e.child(this.taskMenu(task, "run", t)))
       .when(open("explain") && live, (e) => e.child(this.taskMenu(task, "explain", t)));
   }

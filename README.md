@@ -111,7 +111,8 @@ In the panel:
   (what it involves, why, which parts of the code, what done looks like, open questions) into the
   task's description, without starting it. Same choices as Run: the task's own agent if it's still
   running (listed first), another agent in the repo, or a new tab;
-- a task that comes after unfinished ones shows `after #3`; Run warns about it;
+- a task that comes after unfinished ones shows `after #3`; Run warns about it, and finishing it
+  takes **Done anyway** (the CLI refuses `htask done` out of order without `--force`);
 - in-progress and blocked tasks show their agent's live state (`t6 working`). Click it to jump to
   that terminal. If the agent has exited or its terminal has closed, the task says so;
 - the **To do**, **Done**, **Dropped** and **Archived** chips show or hide those sections (Blocked
@@ -303,6 +304,7 @@ htask add "title" [-d "description"] [--after 3,4] [--status todo|doing|blocked|
 htask depend <id> --on 3 [--clear]        # this task comes after #3
 htask next                                # the first to-do that isn't waiting on another
 htask start|done|drop|reopen <id>...      # reopen = back to to-do (also unblocks); start claims the task for this terminal
+                                          # done refuses a task whose dependencies aren't done (--force overrides)
 htask block <id> -m "what you need"
 htask note <id> "text"
 htask edit <id> [--title ...] [-d ...]

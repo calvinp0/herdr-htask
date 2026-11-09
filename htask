@@ -308,6 +308,10 @@ def set_status(args, status: str) -> None:
     for task_id in args.ids:
         _get_task(conn, task_id, project)
         waiting = waiting_on(deps.get(task_id, []))
+        if status == "done" and waiting and not getattr(args, "force", False):
+            # Finishing out of order is almost always a mistake; starting early can be prep work.
+            sys.exit(f"htask: #{task_id} comes after {', '.join(f'#{d}' for d in waiting)}, which isn't done."
+                     " Finish that first, or use --force.")
         if status == "doing" and waiting:
             print(f"htask: note: #{task_id} comes after {', '.join(f'#{d}' for d in waiting)}, not done yet",
                   file=sys.stderr)
@@ -1314,6 +1318,8 @@ def main(argv=None) -> None:
         s = sub.add_parser(name, help=helptext)
         s.add_argument("ids", type=int, nargs="+")
         s.add_argument("-m", "--message", help="also set the task's note")
+        if status == "done":
+            s.add_argument("--force", action="store_true", help="even if it comes after a task that isn't done")
         s.set_defaults(fn=lambda args, st=status: set_status(args, st))
 
     n = sub.add_parser("note", help="set a progress note on a task")

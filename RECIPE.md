@@ -67,7 +67,8 @@ the agent that owns the task.
   in:", with the task's own agent first; the message asks the agent not to start the task but to
   write a short explanation into its description with `htask edit <id> -d`.
 - A to-do or in-progress task with unfinished dependencies shows a `dim` "after #3" tag; its Run
-  menu starts with a red "Comes after #3, not done yet." line.
+  menu starts with a red "Comes after #3, not done yet." line, its Done button reads **Done anyway**
+  (`htask done <id> --force`), and clicking its status mark does nothing (the tooltip says why).
 - Every change you make runs `htask --by you ...`. If the task belongs to a live agent: Claude Code
   hears about it from its inbox hook at its next step (a toast says so); any other agent gets a
   `[Herdr task panel] ...` message typed into its terminal with `hc send`, which refuses while the

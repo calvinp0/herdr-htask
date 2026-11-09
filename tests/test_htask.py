@@ -654,6 +654,23 @@ class Dependencies(Base):
         self.assertIn("comes after #1, not done yet", out.stderr)
         self.assertEqual(self.tasks()[1]["status"], "doing")
 
+    def test_done_before_its_dependency_is_refused_unless_forced(self):
+        self.run_htask("add", "A")
+        self.run_htask("add", "B", "--after", "1")
+        out = self.run_htask("done", "2", check=False)
+        self.assertNotEqual(out.returncode, 0)
+        self.assertIn("comes after #1, which isn't done", out.stderr)
+        self.assertEqual(self.tasks()[1]["status"], "todo")
+        self.run_htask("done", "2", "--force")
+        self.assertEqual(self.tasks()[1]["status"], "done")
+
+    def test_done_after_dependency_is_fine(self):
+        self.run_htask("add", "A")
+        self.run_htask("add", "B", "--after", "1")
+        self.run_htask("done", "1")
+        self.run_htask("done", "2")
+        self.assertEqual([t["status"] for t in self.tasks()], ["done", "done"])
+
     def test_loops_and_self_are_refused(self):
         self.run_htask("add", "a")
         self.run_htask("add", "b", "--after", "1")
