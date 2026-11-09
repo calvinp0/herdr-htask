@@ -2,377 +2,79 @@
 
 [![tests](https://github.com/calvinp0/herdr-htask/actions/workflows/tests.yml/badge.svg)](https://github.com/calvinp0/herdr-htask/actions/workflows/tests.yml)
 
-A side panel for [Herdr](https://herdr.dev) that shows what your coding agents have finished,
-what they're working on, what's blocked, and what's left. Agents record tasks with a small
-`htask` CLI in one shared SQLite database. The panel follows the terminal you focus, shows that
-repo's tasks, and updates as soon as any agent writes.
+A side panel for [Herdr](https://herdr.dev) that shows what your coding agents have done, what
+they're doing, what's blocked and what's left. It follows the terminal you focus and updates live.
 
 <p align="center">
   <img src="preview.png" width="420" alt="The Tasks panel in the Herdr desktop app: To do, Done, Dropped and Archived filter chips, a blocked task with its reason, a task in progress, three to-do tasks, the five most recent done tasks with Show 5 more, and four archived ones, with a Tasks 10/15 button and a red dot in the tab bar">
 </p>
 
-The panel showing this repo's own tasks. The status bar gets a chip with the same count and how
-many tasks are blocked across all repos: <img src="docs/chip.png" height="22" alt="Status-bar chip: 10/15, 5 blocked">
-
-(The middle of the panel, which was empty, is cut out of the screenshot.)
-
-It works with both Herdr front ends:
-
-- **Herdr desktop app** (`herdr-app`): a native panel mod, a status-bar chip, a toast when a
-  task becomes blocked, and a done/total badge on the panel's button.
-- **Herdr terminal UI** (`herdr`): a plugin pane, plus a `$tasks` progress token for the sidebar.
+The status bar gets a chip with the same count: <img src="docs/chip.png" height="22" alt="Status-bar chip: 10/15, 5 blocked">
+(The empty middle of the panel is cut from the screenshot.)
 
 ## How it works
 
-- **Agents write tasks** with `htask add`, `start`, `done`, `note` and `block`, or, for Claude Code
-  and Codex, a hook copies the agent's own task list or plan automatically. Tasks belong to the git repo the command
-  ran in.
-- **One database** at `~/.local/share/herdr-tasks/tasks.db` (WAL mode, so several agents can write
-  while the panel reads). After every write htask rewrites `signal/changed` next to it, and the
-  panel watches that.
-- **You can change tasks too**, from the panel. The agent that owns the task is told: Claude
-  through a hook at its next step, other agents with a message typed into their terminal.
+- Agents record tasks with the `htask` CLI, in one shared SQLite list per repo.
+- Claude Code and Codex can fill it automatically from their own task lists.
+- You can change tasks in the panel too, and the agent that owns the task is told.
 
-## Requirements
-
-- Python 3.10 or newer (standard library only)
-- Herdr desktop app 0.1.14+ with herdr-core (`hc`), and/or the Herdr terminal UI 0.9+
-- git (tasks are grouped by repo)
+Works with the Herdr desktop app (Linux, macOS, Windows) and the Herdr terminal UI.
 
 ## Install
+
+Needs Python 3.10+ and git.
 
 ```sh
 git clone https://github.com/calvinp0/herdr-htask
 cd herdr-htask
-./install.sh
-htask connect all        # or the panel's Agents button
+./install.sh            # links htask, installs the app mod and the terminal-UI plugin
+htask connect all       # sets up Claude Code, Codex and Pi
 ```
 
-`install.sh` links `htask` and `htask-claude-inbox` into `~/.local/bin`, copies the desktop-app
-mod into `~/.config/herdr-app/mods/htask` (if you have the app), links the terminal-UI plugin
-(if you have `herdr`), and finishes with `htask doctor`.
+`htask connect` backs up each file before changing it. `--remove` takes out exactly what it added.
 
-`htask connect all` sets up every agent it finds: for Claude Code, the hooks in
-`~/.claude/settings.json` and the instructions in `~/.claude/CLAUDE.md`; for Codex, the `update_plan`
-hook in `~/.codex/hooks.json` and the instructions in `~/.codex/AGENTS.md`; for Pi, the instructions
-in `~/.pi/agent/AGENTS.md`. It backs up each file before changing it, never rewrites a file
-that's already right, and `htask connect <agent> --remove` takes out exactly what it added.
-`htask connect status` shows where each agent stands. Agents started afterwards pick it up.
-Then set up the panel below.
+## Set up the panel
 
-### Moving or updating
-
-Nothing outside the checkout names the checkout: agents run `htask`, and the Claude hooks run
-`~/.local/bin/htask` and `~/.local/bin/htask-claude-inbox`. So:
-
-- **After moving or renaming the folder**, run `./install.sh` from its new place. It re-points
-  the links and the plugin.
-- **After `git pull`**, run `./install.sh` too: the desktop-app mod is a copy, so it only changes
-  when it's copied again.
-- **`htask doctor`** checks the links, the Claude hooks, the plugin link and whether the app mod
-  matches the checkout, and says what to run when something is off. If htask can't run, the
-  status chip shows a red `htask ✗`.
-
-## Herdr app on Windows
-
-The `htask` CLI runs on Linux and macOS. On Windows, the Herdr app only needs the panel mod: your
-agents run on the machines you connect to over SSH, and the panel runs htask **there** when you
-focus one of their spaces.
-
-1. **On each machine you SSH into** (where agents run), install htask as above:
-   `./install.sh && htask connect all`.
-2. **On Windows**, copy the mod into the app's home (by default `%USERPROFILE%\.config\herdr-app`,
-   the folder with the app's `AGENTS.md`), in PowerShell:
-
-   ```powershell
-   git clone https://github.com/calvinp0/herdr-htask "$env:TEMP\herdr-htask"
-   Copy-Item -Recurse -Force "$env:TEMP\herdr-htask\mods\htask" "$HOME\.config\herdr-app\mods\"
-   ```
-
-3. Add the machine in the app (Settings → Machines) if it isn't there yet, and open a space on it.
-4. Open the panel next to a terminal: `herdr-app do pane.split --direction right --mod htask`, then
-   click **Add to my layout** in it. That docks the panel in the layout's right-hand panel (next to
-   Files and Changes) and adds the status-bar chip, which shows and hides it in every tab and space.
-   Herdr's own layouts can't change, so on one of those it makes your copy (`main-tasks`) and
-   switches to it; `Ctrl+Shift+L` switches layouts.
-
-Spaces on the Windows PC itself show a plain "Tasks" chip: there's no htask there to read.
-
-## Herdr desktop app
-
-`install.sh` copies the mod into `~/.config/herdr-app/mods/htask` and checks it. Or ask the agent
-running in Herdr: *"Read ~/.config/herdr-app/AGENTS.md, then add this mod:
-https://github.com/calvinp0/herdr-htask"*. It follows [RECIPE.md](RECIPE.md).
-
-The quickest way: open it as a pane (`herdr-app do pane.split --direction right --mod htask`) and
-click **Add to my layout** (or bind `htask.dock`). It does what follows for you, on a copy if the layout
-is one of Herdr's own. By hand: shipped layouts are read-only, so do this in your own copy
-(`herdr-app do layout.clone '{"name":"main","as":"my-layout"}'`), in
-`~/.config/herdr-app/layouts/<layout>.json`:
-
-1. **The status-bar chip** (needed for blocked-task toasts and the badge). Add it to your status
-   row: `{ "id": "status-htask", "type": "block", "content": { "mod": "htask", "props": { "view": "chip" } }, "size": { "weight": 1.3 }, "min": 96 }`.
-   It shows done/total for the focused repo and how many tasks are blocked. Click it to show or
-   hide the panel.
-2. **The panel** (optional). Add `{ "id": "htask", "type": "block", "content": { "mod": "htask" } }`
-   where you want it, for example as a child of a right-hand stack next to Files and Changes. The
-   chip finds it wherever it is: it selects it in its stack and shows what was hiding it. Without a
-   panel block, the chip opens the panel as a floating window instead.
-3. **A tab-bar button** (optional). If your tab bar mod draws panel buttons, add one that selects
-   the htask block in its stack and shows the stack's column. The chip publishes
-   `shared("htask.summary")` = `{project, done, total, blocked}` for a `2/5` badge and a dot while
-   anything is blocked.
-
-In the panel:
-
-- click a task to see its description, its agent and when it last changed, plus buttons for
-  Mark in progress, Block, Done, Unblock, Drop or Reopen. These only change the task's status
-  (blocking from the panel has no reason; agents and `htask block <id> -m "..."` can give one);
-- on a to-do, **▸ Run…** starts an agent on it. Every choice says where it goes: **New Claude
-  tab**, **New Codex tab**, ... (the agents installed for that space) opens a new tab in the repo
-  with the task as the agent's first message; **Send to t6 (Pi, idle)** types it into an agent
-  already running in the repo. Nothing goes to an agent you didn't pick. The message asks the
-  agent to run `htask start <id>`, which claims the task for its terminal, so the task moves to
-  In progress with that agent's live state (`t15 working`) and to Done when it finishes;
-- click a task's status dot to mark it done, or to reopen it;
-- type in the box at the bottom and press Enter to add a task for the next agent;
-- **? Explain…** on an open task starts a conversation about it with an agent, without starting the
-  work: what it involves, why, which parts of the code, what done looks like, open questions, in as
-  much depth as it needs, in the agent's own terminal, where you can ask follow-ups or reframe it.
-  Same choices as Run: the task's own agent if it's still running (listed first), another agent in
-  the repo, or a new tab; either way you land in that conversation. When you're done, the agent
-  saves a short summary as the task's description;
-- a task that comes after unfinished ones shows `after #3`; Run warns about it, and finishing it
-  takes **Done anyway** (the CLI refuses `htask done` out of order without `--force`);
-- in-progress and blocked tasks show their agent's live state (`t6 working`). Click it to jump to
-  that terminal. If the agent has exited or its terminal has closed, the task says so;
-- the **To do**, **Done**, **Dropped** and **Archived** chips show or hide those sections (Blocked
-  and In progress always show; Dropped and Archived start hidden); the panel remembers them. Done
-  shows the five most recent tasks, with **Show N more** / **Show fewer** under them;
-- **Archive** in the header puts away all of this repo's done tasks; a done or dropped task's own
-  **Archive** button puts away just that one. Reopen an archived task to bring it back.
-
-The chips can be keys too: bind `htask.toggle-todo`, `htask.toggle-done`, `htask.toggle-dropped`
-or `htask.toggle-archived` in `~/.config/herdr-app/keys.json`, for example
-`"global": { "ctrl-alt-t": "htask.toggle-todo" }`.
-
-Spaces on SSH machines run htask on that machine, against that machine's own database. Install
-it there once (`scp htask <machine>:~/.local/bin/htask`). Remote spaces refresh every 5 seconds.
-
-## Herdr terminal UI
-
-`install.sh` links the plugin (`herdr plugin link`). Bind a key in `~/.config/herdr/config.toml`, then run `herdr server reload-config`:
-
-```toml
-[[keys.command]]
-key = "prefix+t"
-type = "plugin_action"
-command = "calvin.htask.open"
-description = "open task panel"
-```
-
-Panel keys: `j`/`k` scroll, `t` show or hide to-do tasks, `d` done, `x` dropped, `a` archived,
-`v` descriptions, `q` close.
-
-For progress in the sidebar, add the `$tasks` token (done/total for the agent's repo, updated
-whenever an agent in that pane changes a task):
-
-```toml
-[ui.sidebar.agents]
-rows = [["state_icon", "machine", "workspace", "tab"], ["agent", "$tasks"]]
-
-[ui.sidebar.spaces]
-rows = [["state_icon", "workspace", "$tasks"], ["branch", "git_status"]]
-```
-
-## Claude Code hooks
-
-`htask connect claude` adds these. To do it by hand, add both to `~/.claude/settings.json`. They
-go through the links `install.sh` makes, so they keep working if you move the checkout:
-
-```json
-"hooks": {
-  "PostToolUse": [
-    { "matcher": "TaskCreate|TaskUpdate|TodoWrite|ExitPlanMode",
-      "hooks": [ { "type": "command", "command": "~/.local/bin/htask hook claude", "timeout": 10 } ] },
-    { "matcher": "*",
-      "hooks": [ { "type": "command", "command": "~/.local/bin/htask-claude-inbox", "timeout": 10 } ] }
-  ],
-  "UserPromptSubmit": [
-    { "hooks": [ { "type": "command", "command": "~/.local/bin/htask-claude-inbox", "timeout": 10 } ] }
-  ]
-}
-```
-
-- **`htask hook claude`** copies Claude's own task tool (`TaskCreate`/`TaskUpdate`, or the older
-  `TodoWrite`) into htask, so Claude sessions fill the panel without being told to. Dependencies
-  Claude's task tool sends (`addBlockedBy`) become htask dependencies. An approved plan-mode plan
-  (`ExitPlanMode`) becomes one in-progress "Plan: …" task with the plan's opening and its file path;
-  the instructions ask Claude to record the plan's steps as tasks, in order.
-- **`htask-claude-inbox`** (`hooks/claude-inbox.sh`) tells Claude about tasks you changed in the panel, at its next tool call
-  or prompt, including Claude's own task id so it updates its list instead of undoing your change.
-  It runs on every tool call; a shell check (about 3 ms) skips Python unless htask has written
-  since that session last looked.
-
-Both always exit 0, so a broken hook can never block a tool call.
-
-## Codex hook
-
-`htask connect codex` adds this to `~/.codex/hooks.json` (Codex needs `[features] hooks = true` in
-its `config.toml`, and asks you to approve a new hook the next time it starts):
-
-```json
-"hooks": {
-  "PostToolUse": [
-    { "matcher": "^update_plan$",
-      "hooks": [ { "type": "command", "command": "~/.local/bin/htask hook codex", "timeout": 10 } ] }
-  ]
-}
-```
-
-Each `update_plan` resends the whole plan, so htask mirrors it by step text: new steps are added,
-statuses follow, and a step a revised plan leaves out is dropped (unless it was done). Codex may run
-hooks from its background app-server rather than the agent's terminal; then htask asks herdr-core
-for the live Codex terminal working in that repo, and leaves the terminal empty if there are several.
-When you change a Codex task in the panel, the message typed to Codex asks it to update its plan to
-match, so its next `update_plan` doesn't undo your change.
-
-Not every Codex has `update_plan`: in its code mode (only an `exec` tool that calls others), the plan
-tool isn't offered, so the hook never fires and Codex follows the instructions' fallback, `htask add` /
-`start` / `done`. Its commands also run without `HC_TERMINAL_ID`; htask then finds the Codex terminal
-through herdr-core, as the hook does.
-
-In Codex's `workspace-write` sandbox, htask's writes (to `~/.local/share/herdr-tasks`) need approval.
-To stop the prompts, choose "always allow" for `htask` when Codex asks (it saves
-`prefix_rule(pattern=["htask"], decision="allow")` in `~/.codex/rules/default.rules`), or add the
-folder to `[sandbox_workspace_write] writable_roots` in `~/.codex/config.toml`. htask doesn't change
-Codex's permissions for you.
-
-## Agent instructions
-
-`htask connect` adds these, between `<!-- htask:start -->` and `<!-- htask:end -->` markers. By hand:
-
-**Claude Code** (`~/.claude/CLAUDE.md`, with the hooks above). Not every Claude Code session has
-a task-list tool, so the instructions cover both cases:
-
-```markdown
-## Task tracking (htask)
-
-The Herdr task panel shows your plan. For any task with more than one step, record the plan in
-one of two ways, depending on your tools:
-
-- **If you have a task-list tool** (TaskCreate/TaskUpdate, or TodoWrite): plan with it as usual
-  (subject = short title, description = what done looks like) and keep statuses current. A hook
-  copies it into the panel. Don't also `htask add` those steps.
-- **If you don't have one:** use the `htask` CLI itself: `htask add "<short title>" -d "<what done
-  looks like>"` for each step, `htask start <id>` before working on one, `htask done <id>` after
-  verifying it.
-
-After a plan is approved in plan mode, record its steps the same way, in order.
-
-Either way, use the `htask` CLI for (ids come from `htask list`):
-- `htask list` at the start, to pick up open tasks earlier sessions left in this repo
-  (`htask next` names the first one that isn't waiting on another).
-- `htask depend <id> --on <earlier id>` when a step can't start before another is done
-  (or `htask add ... --after <id>`).
-- `htask note <id> "<progress, findings, next step>"` to leave information for the human.
-- `htask block <id> -m "<what you need>"` when you are waiting on the user or something
-  external. This notifies the human.
-```
-
-If a session does both, the hook doesn't add a duplicate: a task from Claude's tool is linked to
-an unlinked `htask add` task with the same title, from the same terminal, in the same repo.
-
-**Codex** (`~/.codex/AGENTS.md`, with the hook above):
-
-```markdown
-## Task tracking (htask)
-
-The Herdr task panel shows your plan. For any task with more than one step:
-
-- **Plan with your `update_plan` tool** as usual (short step names) and keep the statuses current.
-  A hook copies the plan into the panel. Don't also `htask add` those steps.
-- **If `update_plan` isn't available:** use the `htask` CLI itself: `htask add "<short title>" -d
-  "<what done looks like>"` for each step, `htask start <id>` before working on one, `htask done
-  <id>` after verifying it.
-
-Either way, use the `htask` CLI for (ids come from `htask list`):
-- `htask list` at the start, to pick up open tasks earlier sessions left in this repo
-  (`htask next` names the first one that isn't waiting on another).
-- `htask depend <id> --on <earlier id>` when a step can't start before another is done
-  (or `htask add ... --after <id>`).
-- `htask note <id> "<progress, findings, next step>"` to leave information for the human.
-- `htask block <id> -m "<what you need>"` when you are waiting on the user or something external. This notifies the human.
-- A message starting with `[Herdr task panel]` means the human changed one of your tasks: follow it, and update your plan to match so your next update doesn't undo it.
-```
-
-**Pi and other agents** (`~/.pi/agent/AGENTS.md`, or a project's `AGENTS.md`):
-
-```markdown
-## Task tracking (htask)
-
-For any task with more than one step, record the plan with `htask` so it shows in
-the Herdr task panel. Tasks are scoped to the current git repo.
-
-- `htask list` to see open tasks first, so you pick up existing work instead of duplicating it.
-- `htask add "<short title>" -d "<what done looks like>"` for each step, in order; add
-  `--after <id>` when a step can't start before an earlier one is done. `htask next` names the
-  first step that isn't waiting.
-- `htask start <id>` before working on a step, `htask done <id>` after verifying it.
-- `htask note <id> "<progress, findings, next step>"` to leave information for the human.
-- `htask block <id> -m "<what you need>"` when you are waiting on the user or something external. This notifies the human.
-- Keep using your own todo tool as well; htask is the record the human reads.
-- A message starting with `[Herdr task panel]` means the human changed one of your tasks: follow it and update your plan.
-```
-
-If you change tasks from a terminal yourself, add `--by you` (`htask --by you done 4`) so agents
-hear about it.
-
-## CLI reference
+**Herdr app (Linux, macOS):** open the panel next to a terminal, then click **Add to my layout** in it.
 
 ```sh
-htask add "title" [-d "description"] [--after 3,4] [--status todo|doing|blocked|done|dropped]
-htask depend <id> --on 3 [--clear]        # this task comes after #3
-htask next                                # the first to-do that isn't waiting on another
-htask start|done|drop|reopen <id>...      # reopen = back to to-do (also unblocks); start claims the task for this terminal
-                                          # done refuses a task whose dependencies aren't done (--force overrides)
-htask block <id> -m "what you need"
-htask note <id> "text"
-htask edit <id> [--title ...] [-d ...]
-htask list [--all] [--archived] [--json]
-htask archive <id>...                     # archive done/dropped tasks now
-htask clean [--days 7] [--everywhere] [--dry-run]   # archive old done/dropped tasks
-htask summary                             # JSON: counts here + blocked tasks everywhere
-htask panel                               # the terminal panel (curses)
-htask doctor                              # check the install
-htask connect status|all|claude|codex|pi [--remove]   # set agents up (or take htask out)
+herdr-app do pane.split --direction right --mod htask
 ```
 
-Global options: `--project <dir>` (default: the git root of the current directory) and
-`--by <who>`. `HTASK_DB` overrides the database path.
+That docks it on the right with a status-bar chip to show and hide it. On one of Herdr's own
+layouts it makes your copy first (`Ctrl+Shift+L` switches layouts).
 
-## Data
+**Herdr app on Windows:** the agents run on machines you SSH into, so install htask there (above).
+On Windows you only need the mod, copied in PowerShell:
 
-- `tasks`: one row per task. `project` is the repo root; `agent` and `pane_id` (Herdr app
-  terminal like `t6`, or TUI pane like `w1:p2`) are filled in automatically; `external_id` ties a
-  row to a Claude task; `archived_at` is set by `htask clean`.
-- `deps`: task order, `task_id` comes after `depends_on`. A dependency that's done or dropped no
-  longer holds a task back. Loops are refused.
-- `changes`: who changed what (`by = 'you'` for the human), read by the Claude inbox hook.
-- `hook_cursor`: how far each Claude session has read `changes`.
-
-Query it directly, for example:
-`sqlite3 ~/.local/share/herdr-tasks/tasks.db 'select status, count(*) from tasks group by 1'`.
-
-## Tests
-
-```sh
-python3 -m unittest discover tests
+```powershell
+git clone https://github.com/calvinp0/herdr-htask "$env:TEMP\herdr-htask"
+Copy-Item -Recurse -Force "$env:TEMP\herdr-htask\mods\htask" "$HOME\.config\herdr-app\mods\"
 ```
 
-CI runs them on Linux and macOS with Python 3.10 and 3.12, parses every mod file with `node --check`,
-and runs `node --test tests/layout_edit.test.mjs` for the layout change behind "Add to my layout"
-(the app's own `herdr-app check` needs Herdr, so run it locally).
+Then open a space on the SSH machine and do the two steps above.
+
+**Herdr terminal UI:** bind a key to the plugin action `calvin.htask.open`
+(see [reference](docs/reference.md#terminal-ui)).
+
+## Using it
+
+- **Click a task** for its details and buttons: Mark in progress, Block, Done, Drop, Reopen.
+- **Click the status dot** to mark a task done.
+- **Add a task** in the box at the bottom.
+- **▸ Run…** starts an agent you pick on a to-do: a new tab, or one already running.
+- **? Explain…** opens a conversation with an agent about a task, without starting it.
+- **Live state:** in-progress tasks show their agent's state (`t6 working`). Click it to jump there.
+- **Order:** a task can come after another (`htask add … --after 3`). It shows `after #3` until #3 is done.
+- **Chips** show or hide To do, Done, Dropped and Archived.
+- **Archive** puts away done tasks; reopen one to bring it back.
+- **Blocked tasks** raise a toast.
+
+## More
+
+- [Agents](docs/agents.md): the hooks and instructions `htask connect` adds.
+- [Reference](docs/reference.md): CLI, updating, layouts by hand, keys, terminal UI, data, tests.
+- [RECIPE.md](RECIPE.md): the mod's brief, for herdr.dev/mods.
 
 ## License
 
