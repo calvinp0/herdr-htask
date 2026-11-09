@@ -707,6 +707,9 @@ def _render(tasks, project, ctx, width, show_done, show_desc, color, archived=No
         ("", 0),
     ]
     sections = order_tasks(tasks, ctx.get("pane_id"), show_done, show_todo)
+    # "›" (this pane's task) only tells tasks apart when the open ones come from more than one
+    # pane, and never on finished rows.
+    mixed = len({t["pane_id"] for t in tasks if t["status"] not in ("done", "dropped") and t["pane_id"]}) > 1
     if not any(rows for _, rows, _ in sections):
         out.append(("No tasks yet.", curses.A_DIM))
         out.append(('Agents add them with: htask add "title" -d "..."', curses.A_DIM))
@@ -715,7 +718,8 @@ def _render(tasks, project, ctx, width, show_done, show_desc, color, archived=No
             continue
         out.append((f"{title} ({len(rows) + more})", curses.A_BOLD | curses.A_UNDERLINE))
         for t in rows:
-            mine = "›" if ctx.get("pane_id") and t["pane_id"] == ctx["pane_id"] else " "
+            mine = "›" if (mixed and t["status"] not in ("done", "dropped") and ctx.get("pane_id")
+                           and t["pane_id"] == ctx["pane_id"]) else " "
             head = f"{mine}{STATUS_GLYPH[t['status']]} #{t['id']} "
             attr = color[t["status"]] | (curses.A_DIM if t["status"] == "done" else 0)
             wrapped = textwrap.wrap(t["title"], width - len(head)) or [""]

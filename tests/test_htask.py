@@ -343,5 +343,29 @@ class TodoToggle(unittest.TestCase):
         self.assertNotIn("TO DO", titles(show_todo=False))
 
 
+class ThisPaneMarker(unittest.TestCase):
+    def setUp(self):
+        from importlib.machinery import SourceFileLoader
+        self.htask = SourceFileLoader("htask_module", str(HTASK)).load_module()
+
+    def marked(self, tasks):
+        color = dict.fromkeys(["doing", "blocked", "todo", "done", "dropped", "head"], 0)
+        lines = self.htask._render(tasks, "/r", {"pane_id": "p1", "agent": None}, 80, True, False, color)
+        return [line for line, _ in lines if line.startswith("›")]
+
+    def task(self, i, status, pane):
+        return {"id": i, "status": status, "pane_id": pane, "completed_at": 0, "title": f"t{i}",
+                "description": "", "note": ""}
+
+    def test_hidden_when_one_pane_made_everything(self):
+        self.assertEqual(self.marked([self.task(1, "todo", "p1"), self.task(2, "doing", "p1")]), [])
+
+    def test_shown_on_open_rows_when_panes_mix(self):
+        tasks = [self.task(1, "todo", "p1"), self.task(2, "doing", "p2"), self.task(3, "done", "p1")]
+        marked = self.marked(tasks)
+        self.assertEqual(len(marked), 1)
+        self.assertIn("#1", marked[0])
+
+
 if __name__ == "__main__":
     unittest.main()

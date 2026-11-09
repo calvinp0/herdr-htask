@@ -238,6 +238,9 @@ class Panel {
   row(task, t) {
     const open = this.open.has(task.id), done = task.status === "done";
     const mine = this.terminal && qualify(this.machine, task.pane_id) === this.terminal;
+    // "this terminal" only tells tasks apart when the open ones come from more than one
+    // terminal, and never on finished rows.
+    const label = mine && this.mixed && task.status !== "done" && task.status !== "dropped";
     const active = task.status === "doing" || task.status === "blocked";
     const own = active ? owner(task, this.machine) : null;
     const orphaned = own && (own.state === "exited" || own.state === "gone");
@@ -248,7 +251,7 @@ class Panel {
       .child(h_flex().gap(8).items_start()
         .child(this.dot(task, t))
         .child(div().flex_1().min_w(0).text_color(done ? t.muted : t.foreground).when(!open, (e) => e.truncate()).child(task.title))
-        .when(mine, (e) => e.child(div().h(19).flex().items_center().text_size(10).text_color(t.accent).child("this terminal")))
+        .when(label, (e) => e.child(div().h(19).flex().items_center().text_size(10).text_color(t.accent).child("this terminal")))
         .when(Boolean(own) && !mine, (e) => e.child(this.ownerTag(task, own, t)))
         .child(div().h(19).flex().items_center().text_size(10.5).text_color(t.dim).child(`#${task.id}`)))
       .when(Boolean(task.note) && !done, (e) => e.child(detail(`↳ ${task.note}`, task.status === "blocked" ? t.blocked : t.muted)))
@@ -271,6 +274,9 @@ class Panel {
     const done = counted.filter((task) => task.status === "done").length;
     const barWidth = Math.max(0, this.width - 28);
     const name = this.project ? this.project.split("/").pop() : "";
+    const owners = new Set(this.tasks.filter((task) => task.status !== "done" && task.status !== "dropped" && task.pane_id)
+      .map((task) => task.pane_id));
+    this.mixed = owners.size > 1;
     const shown = sections(this.tasks, this.terminal, this.show, this.machine).filter(([, rows]) => rows.length);
     if (this.show.archived && this.archived.length) shown.push(["Archived", this.archived, 0]);
 
