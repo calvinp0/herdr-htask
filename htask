@@ -411,6 +411,224 @@ def cmd_doctor(args) -> None:
         sys.exit(1)
 
 
+# --- connecting agents -----------------------------------------------------------
+
+# What `htask connect` adds. Instructions go between markers so `--remove` takes out exactly them.
+MARK_START, MARK_END = "<!-- htask:start -->", "<!-- htask:end -->"
+HEADING = "## Task tracking (htask)"
+
+CLAUDE_INSTRUCTIONS = """## Task tracking (htask)
+
+The Herdr task panel shows your plan. For any task with more than one step, record the plan in
+one of two ways, depending on your tools:
+
+- **If you have a task-list tool** (TaskCreate/TaskUpdate, or TodoWrite): plan with it as usual
+  (subject = short title, description = what done looks like) and keep statuses current. A hook
+  copies it into the panel. Don't also `htask add` those steps.
+- **If you don't have one:** use the `htask` CLI itself: `htask add "<short title>" -d "<what done
+  looks like>"` for each step, `htask start <id>` before working on one, `htask done <id>` after
+  verifying it.
+
+Either way, use the `htask` CLI for (ids come from `htask list`):
+- `htask list` at the start, to pick up open tasks earlier sessions left in this repo.
+- `htask note <id> "<progress, findings, next step>"` to leave information for the human.
+- `htask block <id> -m "<what you need>"` when you are waiting on the user or something
+  external. This notifies the human.
+"""
+
+AGENT_INSTRUCTIONS = """## Task tracking (htask)
+
+For any task with more than one step, record the plan with `htask` so it shows in
+the Herdr task panel. Tasks are scoped to the current git repo.
+
+- `htask list` to see open tasks first, so you pick up existing work instead of duplicating it.
+- `htask add "<short title>" -d "<what done looks like>"` for each step.
+- `htask start <id>` before working on a step, `htask done <id>` after verifying it.
+- `htask note <id> "<progress, findings, next step>"` to leave information for the human.
+- `htask block <id> -m "<what you need>"` when you are waiting on the user or something external. This notifies the human.
+- A message starting with `[Herdr task panel]` means the human changed one of your tasks: follow it and update your plan.
+"""
+
+CONNECT_AGENTS = {
+    "claude": ("Claude Code", ".claude", "CLAUDE.md", CLAUDE_INSTRUCTIONS),
+    "codex": ("Codex", ".codex", "AGENTS.md", AGENT_INSTRUCTIONS),
+    "pi": ("Pi", ".pi/agent", "AGENTS.md", AGENT_INSTRUCTIONS),
+}
+
+
+def claude_hooks() -> list[tuple[str, str | None, str, str]]:
+    """(event, matcher, command, kind) for the Claude Code hooks, kind being how to recognise one."""
+    bin_dir = Path.home() / ".local" / "bin"
+    return [
+        ("PostToolUse", "TaskCreate|TaskUpdate|TodoWrite", f"{bin_dir / 'htask'} hook claude", "mirror"),
+        ("PostToolUse", "*", str(bin_dir / "htask-claude-inbox"), "inbox"),
+        ("UserPromptSubmit", None, str(bin_dir / "htask-claude-inbox"), "inbox"),
+    ]
+
+
+def _hook_kind(command: str) -> str | None:
+    if "claude-inbox" in command:
+        return "inbox"
+    if "htask" in command and "hook claude" in command:
+        return "mirror"
+    return None
+
+
+def _backup(path: Path) -> Path | None:
+    if not path.exists():
+        return None
+    stamp, n = time.strftime("%Y%m%d-%H%M%S"), 1
+    copy = path.with_name(f"{path.name}.bak-htask-{stamp}")
+    while copy.exists():  # two changes in one second must not overwrite the first backup
+        n += 1
+        copy = path.with_name(f"{path.name}.bak-htask-{stamp}-{n}")
+    copy.write_bytes(path.read_bytes())
+    return copy
+
+
+def _has_instructions(text: str) -> bool:
+    return HEADING in text
+
+
+def _strip_instructions(text: str) -> str:
+    """Remove the htask section: the marked block, or (added by hand) the heading to the next ## heading."""
+    if MARK_START in text and MARK_END in text:
+        start, end = text.index(MARK_START), text.index(MARK_END) + len(MARK_END)
+    elif HEADING in text:
+        start = text.index(HEADING)
+        nxt = text.find("\n## ", start + len(HEADING))
+        end = len(text) if nxt == -1 else nxt + 1
+    else:
+        return text
+    before, after = text[:start].rstrip("\n"), text[end:].lstrip("\n")
+    joined = f"{before}\n\n{after}" if before and after else (before or after)
+    return joined.rstrip("\n") + "\n" if joined else ""
+
+
+def connect_status() -> dict:
+    home, out = Path.home(), {}
+    for key, (name, folder, file, _text) in CONNECT_AGENTS.items():
+        available = (home / folder).is_dir()
+        instructions_file = home / folder / file
+        instructions = instructions_file.exists() and _has_instructions(instructions_file.read_text())
+        entry = {"name": name, "available": available, "instructions": instructions,
+                 "file": str(instructions_file)}
+        parts = [instructions]
+        if key == "claude":
+            found = {"mirror": False, "inbox_post": False, "inbox_prompt": False}
+            settings = home / ".claude" / "settings.json"
+            try:
+                hooks = json.loads(settings.read_text()).get("hooks", {}) if settings.exists() else {}
+            except ValueError:
+                hooks = {}
+            for event, entries in hooks.items():
+                for e in entries:
+                    for h in e.get("hooks", []):
+                        kind = _hook_kind(h.get("command", ""))
+                        if kind == "mirror":
+                            found["mirror"] = True
+                        elif kind == "inbox":
+                            found["inbox_post" if event == "PostToolUse" else "inbox_prompt"] = True
+            entry["hooks"] = found
+            parts += list(found.values())
+        entry["connected"] = available and all(parts)
+        entry["partial"] = available and any(parts) and not all(parts)
+        out[key] = entry
+    return out
+
+
+def connect_agent(key: str, remove: bool = False) -> list[str]:
+    """Add (or with remove=True take out) htask's instructions, and for Claude Code its hooks.
+
+    Returns what was done, for people. Backs up every file before changing it.
+    """
+    name, folder, file, text = CONNECT_AGENTS[key]
+    home, done = Path.home(), []
+    if not (home / folder).is_dir():
+        raise SystemExit(f"htask: {name} isn't set up here (~/{folder} is missing)")
+
+    path = home / folder / file
+    current = path.read_text() if path.exists() else ""
+    if remove and _has_instructions(current):
+        backup = _backup(path)
+        path.write_text(_strip_instructions(current))
+        done.append(f"removed the htask section from {path} (backup: {backup.name})")
+    elif not remove and not _has_instructions(current):
+        backup = _backup(path)
+        sep = "" if not current or current.endswith("\n\n") else ("\n" if current.endswith("\n") else "\n\n")
+        path.write_text(f"{current}{sep}{MARK_START}\n{text}{MARK_END}\n")
+        done.append(f"added the htask section to {path}" + (f" (backup: {backup.name})" if backup else ""))
+
+    if key == "claude":
+        settings = home / ".claude" / "settings.json"
+        try:
+            data = json.loads(settings.read_text()) if settings.exists() else {}
+        except ValueError:
+            raise SystemExit(f"htask: {settings} isn't valid JSON; not touching it")
+        hooks = data.setdefault("hooks", {})
+        if remove:
+            for event in list(hooks):
+                kept = []
+                for e in hooks[event]:
+                    e["hooks"] = [h for h in e.get("hooks", []) if not _hook_kind(h.get("command", ""))]
+                    if e["hooks"]:
+                        kept.append(e)
+                hooks[event] = kept
+                if not kept:
+                    del hooks[event]
+            if not hooks:
+                del data["hooks"]
+        else:
+            changed = False
+            for event, matcher, command, kind in claude_hooks():
+                entries = hooks.setdefault(event, [])
+                match = None
+                for e in entries:
+                    for h in e.get("hooks", []):
+                        if _hook_kind(h.get("command", "")) == kind and (e.get("matcher") == matcher or kind == "mirror"):
+                            match = h
+                if match is None:
+                    entry = {"hooks": [{"type": "command", "command": command, "timeout": 10}]}
+                    if matcher is not None:
+                        entry = {"matcher": matcher, **entry}
+                    entries.append(entry)
+                    changed = True
+                elif match.get("command") != command:
+                    match["command"] = command  # an old path (inside the checkout): use the stable link
+                    changed = True
+        # Write only when the JSON actually differs, so reconnecting is a no-op.
+        if remove or changed:
+            before = settings.read_text() if settings.exists() else None
+            after = json.dumps(data, indent=2, ensure_ascii=False) + "\n"
+            if after != before:
+                backup = _backup(settings)
+                settings.write_text(after)
+                json.loads(settings.read_text())  # never leave it unparseable
+                done.append(f"{'removed' if remove else 'set up'} the htask hooks in {settings}"
+                            + (f" (backup: {backup.name})" if backup else ""))
+    return done
+
+
+def cmd_connect(args) -> None:
+    if args.target == "status":
+        status = connect_status()
+        if args.json:
+            print(json.dumps(status))
+            return
+        for key, s in status.items():
+            state = ("not installed" if not s["available"] else "connected" if s["connected"]
+                     else "partly connected" if s["partial"] else "not connected")
+            print(f"{s['name']:<12} {state}")
+        return
+    targets = [k for k, s in connect_status().items() if s["available"]] if args.target == "all" else [args.target]
+    for key in targets:
+        done = connect_agent(key, remove=args.remove)
+        name = CONNECT_AGENTS[key][0]
+        print(f"{name}: " + ("; ".join(done) if done else ("nothing to remove" if args.remove else "already connected")))
+    if not args.remove:
+        print("Agents started from now on pick it up; running ones keep their old setup until restarted.")
+
+
 # --- agent hooks ---------------------------------------------------------------
 
 # Claude Code's task statuses, and the older TodoWrite list's.
@@ -822,6 +1040,12 @@ def main(argv=None) -> None:
     cl.set_defaults(fn=cmd_clean)
 
     sub.add_parser("doctor", help="check the install: links, hooks, app mod, TUI plugin, DB").set_defaults(fn=cmd_doctor)
+
+    cn = sub.add_parser("connect", help="set up (or --remove) htask for Claude Code, Codex, Pi")
+    cn.add_argument("target", choices=["status", "all", *CONNECT_AGENTS])
+    cn.add_argument("--remove", action="store_true", help="take htask's hooks and instructions out")
+    cn.add_argument("--json", action="store_true", help="with status: JSON")
+    cn.set_defaults(fn=cmd_connect)
 
     sm = sub.add_parser("summary", help="JSON counts for this project and blocked tasks everywhere")
     sm.set_defaults(fn=cmd_summary)

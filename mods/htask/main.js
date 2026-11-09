@@ -104,6 +104,8 @@ class Panel {
     this.show = loadShow(); this.archived = [];
     // The Run menu: which to-do it's open for, and the agents installed where this space runs.
     this.runFor = null; this.known = null;
+    // The Agents section: htask connect status for this space's machine, loaded when opened.
+    this.setupOpen = false; this.connections = null;
     // Key commands for this mod, e.g. keys.json "mod:htask" or "global": "htask.toggle-done".
     cx.spawn(async (cx) => {
       for (;;) {
@@ -243,6 +245,65 @@ class Panel {
       .child(`${own.addr} ${OWNER_WORD[own.state] ?? own.state}`);
   }
 
+  // Agents: connect or disconnect Claude Code, Codex and Pi (htask connect). Runs where the space
+  // runs. htask backs up each file it changes and never writes a file it doesn't need to change.
+  toggleSetup(cx) {
+    this.setupOpen = !this.setupOpen;
+    if (this.setupOpen) this.loadConnections(cx);
+    cx.notify();
+  }
+
+  loadConnections(cx) {
+    const machine = this.machine;
+    cx.spawn(async (cx) => {
+      try {
+        const r = await htask(machine, ["connect", "status", "--json"]);
+        if (r.code !== 0) throw new Error(htaskError(machine, r));
+        this.connections = { machine, agents: JSON.parse(r.stdout) };
+      } catch (e) {
+        this.connections = { machine, error: String(e?.message ?? e) };
+      }
+      cx.notify();
+    });
+  }
+
+  setConnection(key, name, remove, cx) {
+    const machine = this.machine;
+    cx.spawn(async (cx) => {
+      const r = await htask(machine, ["connect", key, ...(remove ? ["--remove"] : [])])
+        .catch((e) => ({ code: 1, stderr: String(e?.message ?? e) }));
+      notify(r.code === 0
+        ? { title: `${name} ${remove ? "disconnected" : "connected"}`, level: "success",
+            body: (r.stdout || "").trim().split("\n").map((l) => l.replace(/^[^:]+: /, "")).join("\n") }
+        : { title: `Couldn't ${remove ? "disconnect" : "connect"} ${name}`, level: "warning", body: htaskError(machine, r) });
+      this.loadConnections(cx);
+    });
+  }
+
+  setupSection(t) {
+    const c = this.connections?.machine === this.machine ? this.connections : null;
+    const row = (key, a) => {
+      const state = !a.available ? "not installed" : a.connected ? "connected" : a.partial ? "partly connected" : "not connected";
+      const color = a.connected ? t.done : a.partial ? t.blocked : t.dim;
+      const what = key === "claude" ? "hooks + instructions" : "instructions";
+      return h_flex().id(`agent-${key}`).gap(8).items_center().py(3)
+        .child(div().w(90).flex_none().child(a.name))
+        .child(div().flex_1().min_w(0).text_size(11).text_color(color).truncate().tooltip(`${what}: ${a.file}`).child(state))
+        .when(a.available, (e) => e.child(div().id(`connect-${key}`).px(8).py(2).rounded(5).text_size(11).cursor_pointer()
+          .bg(t.raised).text_color(t.foreground).hover((s) => s.bg(t.hover))
+          .tooltip(a.connected ? `Remove htask's ${what} (backed up first)` : `Add htask's ${what} (backed up first)`)
+          .on_click((_e, cx) => { cx.stop_propagation(); this.setConnection(key, a.name, a.connected, cx); })
+          .child(a.connected ? "Disconnect" : a.partial ? "Finish" : "Connect")));
+    };
+    return v_flex().flex_none().mx(14).mt(10).p(10).gap(2).rounded(8).border_1().border_color(t.border).text_size(12)
+      .child(div().text_size(10.5).font_semibold().text_color(t.dim).child("CONNECT AGENTS"))
+      .when(!c, (e) => e.child(div().text_size(11).text_color(t.dim).child("Checking…")))
+      .when(Boolean(c?.error), (e) => e.child(div().text_size(11).text_color(t.blocked).child(c.error)))
+      .when(Boolean(c?.agents), (e) => e.children(Object.entries(c.agents).map(([key, a]) => row(key, a))))
+      .child(div().pt(4).text_size(10.5).text_color(t.dim)
+        .child("Agents started afterwards pick it up. Claude gets hooks and instructions; Codex and Pi get instructions."));
+  }
+
   // ▸ Run…: start an agent on a to-do. Nothing is routed implicitly: every choice names where the
   // task goes, a new tab with an agent you pick, or one named agent already running in this repo.
   toggleRun(task, cx) {
@@ -373,6 +434,10 @@ class Panel {
         .when(Boolean(name), (e) => e.child(div().min_w(0).px(5).py(1).rounded(4).border_1().border_color(t.border).text_size(10).text_color(t.muted).truncate().child(name)))
         .child(div().flex_1())
         .child(div().text_size(11).text_color(t.muted).child(`${done}/${counted.length}`))
+        .child(div().id("htask-agents").px(6).py(2).rounded(5).text_size(11).cursor_pointer()
+          .text_color(this.setupOpen ? t.foreground : t.muted).bg(this.setupOpen ? t.raised : t.background)
+          .hover((s) => s.bg(t.hover)).tooltip("Connect Claude Code, Codex and Pi to htask")
+          .on_click((_e, cx) => this.toggleSetup(cx)).child("Agents"))
         .when(done > 0, (e) => e.child(div().id("htask-archive").px(6).py(2).rounded(5).text_size(11).cursor_pointer()
           .text_color(t.muted).hover((s) => s.bg(t.hover)).tooltip("Archive this repo's done tasks (htask clean --days 0)")
           .on_click((_e, cx) => this.htask(["clean", "--days", "0"], cx)).child("Archive")))
@@ -394,6 +459,7 @@ class Panel {
             .tooltip(`${on ? "Hide" : "Show"} ${label.toLowerCase()} tasks`)
             .on_click((_e, cx) => this.flip(name, cx)).child(label);
         })))
+      .when(this.setupOpen, (e) => e.child(this.setupSection(t)))
       .child(div().flex_1().min_h(0).relative().mt(8)
         .child(v_flex().id("htask-list").absolute().inset_0().overflow_y_scroll().px(6).pb(8)
           .children(shown.map(([title, rows, more, collapsible]) => v_flex().flex_none()
@@ -409,7 +475,9 @@ class Panel {
           .when(!shown.length, (e) => e.child(v_flex().p(8).gap(6).text_color(t.dim)
             .child(empty)
             .when(!this.error && Boolean(this.project), (e) => e.child(
-              div().px(8).py(5).rounded(6).bg(t.raised).text_size(11.5).text_color(t.muted).child('htask add "title" -d "what done looks like"'))))))
+              div().px(8).py(5).rounded(6).bg(t.raised).text_size(11.5).text_color(t.muted).child('htask add "title" -d "what done looks like"')))
+            .when(!this.error && !this.setupOpen, (e) => e.child(div().id("htask-connect-hint").text_size(11.5).text_color(t.accent)
+              .cursor_pointer().on_click((_e, cx) => this.toggleSetup(cx)).child("New here? Connect your agents…"))))))
         .child(Scrollbar.vertical("htask-list").absolute().inset_0()))
       .when(Boolean(this.note), (e) => e.child(div().px(14).pb(6).text_size(11).text_color(t.blocked).child(this.note)))
       .when(Boolean(this.project), (e) => e.child(h_flex().flex_none().p(10).gap(8).border_t(1).border_color(t.border)

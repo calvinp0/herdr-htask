@@ -405,5 +405,87 @@ class ThisPaneMarker(unittest.TestCase):
         self.assertIn("#1", marked[0])
 
 
+class Connect(Base):
+    def setUp(self):
+        super().setUp()
+        self.home = Path(self.tmp.name) / "home"
+        (self.home / ".claude").mkdir(parents=True)
+        self.env["HOME"] = str(self.home)
+        self.settings = self.home / ".claude" / "settings.json"
+        self.claude_md = self.home / ".claude" / "CLAUDE.md"
+
+    def status(self):
+        return json.loads(self.run_htask("connect", "status", "--json").stdout)
+
+    def hook_commands(self):
+        hooks = json.loads(self.settings.read_text()).get("hooks", {})
+        return sorted((ev, h["command"]) for ev, es in hooks.items() for e in es for h in e["hooks"])
+
+    def test_connect_keeps_existing_settings_and_is_idempotent(self):
+        self.settings.write_text(json.dumps({"theme": "dark", "hooks": {"PostToolUse": [
+            {"matcher": "Write|Edit", "hooks": [{"type": "command", "command": "/x/lint --hook"}]}]}}, indent=2))
+        self.claude_md.write_text("# Mine\n\nKeep this.\n")
+        self.assertFalse(self.status()["claude"]["connected"])
+        self.run_htask("connect", "claude")
+        st = self.status()["claude"]
+        self.assertTrue(st["connected"], st)
+        data = json.loads(self.settings.read_text())
+        self.assertEqual(data["theme"], "dark")
+        self.assertIn(("PostToolUse", "/x/lint --hook"), self.hook_commands())
+        self.assertEqual(len(self.hook_commands()), 4)
+        self.assertTrue(self.claude_md.read_text().startswith("# Mine\n\nKeep this.\n"))
+        before = (self.settings.read_text(), self.claude_md.read_text(), sorted(p.name for p in (self.home / ".claude").iterdir()))
+        out = self.run_htask("connect", "claude").stdout
+        self.assertIn("already connected", out)
+        after = (self.settings.read_text(), self.claude_md.read_text(), sorted(p.name for p in (self.home / ".claude").iterdir()))
+        self.assertEqual(before, after)  # no rewrite, no new backups
+
+    def test_old_inbox_path_is_repointed_not_duplicated(self):
+        self.settings.write_text(json.dumps({"hooks": {"UserPromptSubmit": [
+            {"hooks": [{"type": "command", "command": "/old/checkout/hooks/claude-inbox.sh"}]}]}}))
+        self.run_htask("connect", "claude")
+        prompt = [c for ev, c in self.hook_commands() if ev == "UserPromptSubmit"]
+        self.assertEqual(prompt, [str(self.home / ".local" / "bin" / "htask-claude-inbox")])
+
+    def test_remove_takes_out_only_htask(self):
+        self.settings.write_text(json.dumps({"hooks": {"PostToolUse": [
+            {"matcher": "Write|Edit", "hooks": [{"type": "command", "command": "/x/lint --hook"}]}]}}))
+        self.claude_md.write_text("# Mine\n")
+        self.run_htask("connect", "claude")
+        self.run_htask("connect", "claude", "--remove")
+        self.assertEqual(self.hook_commands(), [("PostToolUse", "/x/lint --hook")])
+        self.assertEqual(self.claude_md.read_text(), "# Mine\n")
+        self.assertTrue(any(p.name.startswith("settings.json.bak-htask-") for p in (self.home / ".claude").iterdir()))
+        self.assertFalse(self.status()["claude"]["connected"])
+
+    def test_quick_connect_and_remove_keep_both_backups(self):
+        original = json.dumps({"theme": "original"})
+        self.settings.write_text(original)
+        self.run_htask("connect", "claude")
+        self.run_htask("connect", "claude", "--remove")
+        backups = sorted(p for p in (self.home / ".claude").iterdir() if p.name.startswith("settings.json.bak-htask-"))
+        self.assertEqual(len(backups), 2)
+        self.assertIn(original, [b.read_text() for b in backups])  # the untouched original survives
+
+    def test_remove_a_hand_written_section(self):
+        self.claude_md.write_text("# Mine\n\n## Task tracking (htask)\n\nold text\n\n## Other\n\nkept\n")
+        self.run_htask("connect", "claude", "--remove")
+        self.assertEqual(self.claude_md.read_text(), "# Mine\n\n## Other\n\nkept\n")
+
+    def test_missing_agent_is_refused(self):
+        out = self.run_htask("connect", "codex", check=False)
+        self.assertNotEqual(out.returncode, 0)
+        self.assertIn("isn't set up here", out.stderr)
+        self.assertFalse(self.status()["codex"]["available"])
+
+    def test_codex_gets_instructions_only(self):
+        (self.home / ".codex").mkdir()
+        self.run_htask("connect", "codex")
+        text = (self.home / ".codex" / "AGENTS.md").read_text()
+        self.assertIn("<!-- htask:start -->", text)
+        self.assertIn("[Herdr task panel]", text)
+        self.assertTrue(self.status()["codex"]["connected"])
+
+
 if __name__ == "__main__":
     unittest.main()

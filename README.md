@@ -43,11 +43,19 @@ It works with both Herdr front ends:
 git clone https://github.com/calvinp0/herdr-htask
 cd herdr-htask
 ./install.sh
+htask connect all        # or the panel's Agents button
 ```
 
 `install.sh` links `htask` and `htask-claude-inbox` into `~/.local/bin`, copies the desktop-app
 mod into `~/.config/herdr-app/mods/htask` (if you have the app), links the terminal-UI plugin
-(if you have `herdr`), and finishes with `htask doctor`. Then set up the parts below that you use.
+(if you have `herdr`), and finishes with `htask doctor`.
+
+`htask connect all` sets up every agent it finds: for Claude Code, the hooks in
+`~/.claude/settings.json` and the instructions in `~/.claude/CLAUDE.md`; for Codex and Pi, the
+instructions in their `AGENTS.md`. It backs up each file before changing it, never rewrites a file
+that's already right, and `htask connect <agent> --remove` takes out exactly what it added.
+`htask connect status` shows where each agent stands. Agents started afterwards pick it up.
+Then set up the panel below.
 
 ### Moving or updating
 
@@ -141,8 +149,8 @@ rows = [["state_icon", "workspace", "$tasks"], ["branch", "git_status"]]
 
 ## Claude Code hooks
 
-Add both to `~/.claude/settings.json`. They go through the links `install.sh` makes, so they keep
-working if you move the checkout:
+`htask connect claude` adds these. To do it by hand, add both to `~/.claude/settings.json`. They
+go through the links `install.sh` makes, so they keep working if you move the checkout:
 
 ```json
 "hooks": {
@@ -168,6 +176,8 @@ working if you move the checkout:
 Both always exit 0, so a broken hook can never block a tool call.
 
 ## Agent instructions
+
+`htask connect` adds these, between `<!-- htask:start -->` and `<!-- htask:end -->` markers. By hand:
 
 **Claude Code** (`~/.claude/CLAUDE.md`, with the hooks above). Not every Claude Code session has
 a task-list tool, so the instructions cover both cases:
@@ -229,6 +239,7 @@ htask clean [--days 7] [--everywhere] [--dry-run]   # archive old done/dropped t
 htask summary                             # JSON: counts here + blocked tasks everywhere
 htask panel                               # the terminal panel (curses)
 htask doctor                              # check the install
+htask connect status|all|claude|codex|pi [--remove]   # set agents up (or take htask out)
 ```
 
 Global options: `--project <dir>` (default: the git root of the current directory) and

@@ -38,4 +38,6 @@ if command -v herdr >/dev/null 2>&1; then
 fi
 
 echo
-exec "$bin/htask" doctor
+"$bin/htask" doctor || true
+echo
+echo "Next: htask connect all   (sets up Claude Code, Codex and Pi; or use the panel's Agents button)"
