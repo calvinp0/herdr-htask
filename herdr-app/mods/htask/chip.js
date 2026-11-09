@@ -3,36 +3,40 @@
 // raises a toast when a task becomes blocked and publishes the counts for the tab bar's button.
 import { div, svg } from "gpui-kit";
 import { h_flex } from "gpui-base";
-import { exec, notify, shared, setShared, theme } from "herdr";
-import { HTASK, SUMMARY_KEY, location, togglePanel, panelShown, watchSignal } from "./common.js";
+import { notify, shared, setShared, theme } from "herdr";
+import { htask, htaskError, qualify, SUMMARY_KEY, location, togglePanel, panelShown, watchSignal } from "./common.js";
 
-// Blocked task ids already announced. Persisted, so a restart doesn't repeat them; an id leaves
-// the list once its task is unblocked, so blocking it again announces it again.
-const NOTIFIED_KEY = "htask.notified";
+// Blocked task ids already announced, one list per machine (ids are per machine's DB).
+// Persisted, so a restart doesn't repeat them; an id leaves its list once the task is unblocked,
+// so blocking it again announces it again. Blocked tasks on a machine are seen while one of its
+// spaces is focused (this computer's are watched all the time).
+const notifiedKey = (machine) => (machine ? `htask.notified.${machine}` : "htask.notified");
 const name = (path) => (path ?? "").split("/").pop();
-// A Herdr app terminal address (t7, or vps/t7 on another machine): the toast can jump there.
-const isTerminal = (id) => /^([\w.-]+\/)?t\d+$/.test(id ?? "");
+// A Herdr app terminal address (t7): the toast can jump there.
+const isTerminal = (id) => /^t\d+$/.test(id ?? "");
 
 export class Chip {
   init(_props, cx) {
     this.summary = null; this.cwd = null;
-    watchSignal(cx, (cx) => this.refresh(cx));
-    cx.timer.every(15000, (cx) => this.refresh(cx));
+    // This computer's blocked tasks are announced even while a remote space is focused.
+    watchSignal(cx, (cx) => (this.machine ? this.checkHere(cx) : this.refresh(cx)));
+    // A remote space can't be watched: poll it every 5 s; here every 15 s is only a backstop.
+    this.ticks = 0;
+    cx.timer.every(5000, (cx) => { if (this.machine || ++this.ticks % 3 === 0) this.refresh(cx); });
     this.refresh(cx);
   }
 
   refresh(cx) {
     if (this.loading) { this.again = true; return; }
     this.loading = true;
-    const cwd = this.cwd;
+    const cwd = this.cwd, machine = this.machine;
     cx.spawn(async (cx) => {
       try {
-        const args = cwd && !this.remote ? ["--project", cwd, "summary"] : ["summary"];
-        const r = await exec(HTASK(), args, { timeout: 10000 });
-        if (r.code !== 0) throw new Error((r.stderr || r.stdout).trim());
+        const r = await htask(machine, cwd ? ["--project", cwd, "summary"] : ["summary"]);
+        if (r.code !== 0) throw new Error(htaskError(machine, r));
         const data = JSON.parse(r.stdout);
-        if (cwd === this.cwd) { this.summary = data; this.error = null; this.publish(data); }
-        this.announce(data.blocked);
+        if (cwd === this.cwd && machine === this.machine) { this.summary = data; this.error = null; this.publish(data); }
+        this.announce(machine, data.blocked);
       } catch (e) {
         this.error = String(e?.message ?? e);
       } finally {
@@ -43,6 +47,15 @@ export class Chip {
     });
   }
 
+  checkHere(cx) {
+    cx.spawn(async () => {
+      try {
+        const r = await htask(null, ["summary"]);
+        if (r.code === 0) this.announce(null, JSON.parse(r.stdout).blocked);
+      } catch { /* the next refresh reports errors */ }
+    });
+  }
+
   publish(data) {
     const c = data.counts, total = c.todo + c.doing + c.blocked + c.done;
     const next = { project: data.project, done: c.done, total, blocked: data.blocked.length };
@@ -50,25 +63,26 @@ export class Chip {
     if (JSON.stringify(shared(SUMMARY_KEY)) !== JSON.stringify(next)) setShared(SUMMARY_KEY, next);
   }
 
-  announce(blocked) {
-    const seen = new Set(shared(NOTIFIED_KEY) ?? []);
+  announce(machine, blocked) {
+    const key = notifiedKey(machine), seen = new Set(shared(key) ?? []);
     for (const task of blocked) {
       if (seen.has(task.id)) continue;
       notify({
         title: `Blocked: ${task.title}`,
-        body: [`${name(task.project)} #${task.id}`, task.note].filter(Boolean).join(" · "),
+        body: [`${machine ? `${machine}: ` : ""}${name(task.project)} #${task.id}`, task.note].filter(Boolean).join(" · "),
         level: "warning",
-        ...(isTerminal(task.pane_id) ? { action: { name: "agent.focus", args: { terminal: task.pane_id } } } : {}),
+        ...(isTerminal(task.pane_id) ? { action: { name: "agent.focus", args: { terminal: qualify(machine, task.pane_id) } } } : {}),
       });
     }
     const now = blocked.map((task) => task.id);
-    if (now.length !== seen.size || now.some((id) => !seen.has(id))) setShared(NOTIFIED_KEY, now);
+    if (now.length !== seen.size || now.some((id) => !seen.has(id))) setShared(key, now);
   }
 
   render(cx) {
     const loc = location();
-    this.remote = loc.remote;
-    if (loc.cwd && loc.cwd !== this.cwd) { this.cwd = loc.cwd; this.refresh(cx); }
+    if (loc.cwd && (loc.cwd !== this.cwd || loc.machine !== this.machine)) {
+      this.cwd = loc.cwd; this.machine = loc.machine; this.refresh(cx);
+    }
 
     const t = theme(), s = shared(SUMMARY_KEY), on = panelShown();
     const blocked = this.summary?.blocked ?? [];

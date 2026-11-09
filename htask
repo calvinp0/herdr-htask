@@ -69,10 +69,15 @@ def connect() -> sqlite3.Connection:
     conn.executescript(SCHEMA)
     # v2: external_id ties a row to an agent's own task (claude:<session>:<task id>),
     # so the hooks update the row they created instead of adding duplicates.
-    if "external_id" not in {r["name"] for r in conn.execute("PRAGMA table_info(tasks)")}:
+    columns = {r["name"] for r in conn.execute("PRAGMA table_info(tasks)")}
+    if "external_id" not in columns:
         with conn:
             conn.execute("ALTER TABLE tasks ADD COLUMN external_id TEXT")
             conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS tasks_external ON tasks (external_id)")
+    # v3: `htask clean` archives old done/dropped tasks instead of deleting them.
+    if "archived_at" not in columns:
+        with conn:
+            conn.execute("ALTER TABLE tasks ADD COLUMN archived_at REAL")
     return conn
 
 
@@ -87,13 +92,38 @@ def signal_path() -> Path:
 
 
 @contextmanager
-def writing(conn: sqlite3.Connection):
+def writing(conn: sqlite3.Connection, project: str | None = None):
     """Commit (or roll back) the block, then announce the change."""
     with conn:
         yield
     signal = signal_path()
     signal.parent.mkdir(parents=True, exist_ok=True)
     signal.write_text(f"{time.time()}\n")
+    if project:
+        report_progress(conn, project)
+
+
+def report_progress(conn: sqlite3.Connection, project: str) -> None:
+    """Herdr TUI sidebar: set the $tasks token ("3/7") on this agent's pane and workspace.
+
+    Only inside a Herdr TUI pane (HERDR_ENV=1). The app panel needs none of
+    this: it reads the DB itself. Best effort: a failure never fails the command.
+    """
+    pane, workspace = os.environ.get("HERDR_PANE_ID"), os.environ.get("HERDR_WORKSPACE_ID")
+    if os.environ.get("HERDR_ENV") != "1" or not pane:
+        return
+    done, total = conn.execute(
+        "SELECT coalesce(sum(status = 'done'), 0), coalesce(sum(status != 'dropped'), 0)"
+        " FROM tasks WHERE project = ? AND archived_at IS NULL", (project,)).fetchone()
+    token = ["--token", f"tasks={done}/{total}"] if total else ["--clear-token", "tasks"]
+    herdr = os.environ.get("HERDR_BIN_PATH", "herdr")
+    targets = [["pane", "report-metadata", pane]] + ([["workspace", "report-metadata", workspace]] if workspace else [])
+    for target in targets:
+        try:
+            subprocess.run([herdr, *target, "--source", "htask", *token],
+                           capture_output=True, timeout=3)
+        except (OSError, subprocess.TimeoutExpired):
+            pass
 
 
 _root_cache: dict[str, str] = {}
@@ -130,10 +160,11 @@ def origin_id() -> str | None:
     return os.environ.get("HERDR_PANE_ID") or os.environ.get("HC_TERMINAL_ID")
 
 
-def fetch_tasks(conn: sqlite3.Connection, project: str) -> list[sqlite3.Row]:
+def fetch_tasks(conn: sqlite3.Connection, project: str, archived: bool = False) -> list[sqlite3.Row]:
+    """The project's tasks: the live ones, or only the archived ones."""
     return conn.execute(
-        "SELECT * FROM tasks WHERE project = ? ORDER BY id", (project,)
-    ).fetchall()
+        f"SELECT * FROM tasks WHERE project = ? AND archived_at IS {'NOT ' if archived else ''}NULL ORDER BY id",
+        (project,)).fetchall()
 
 
 # --- CLI -----------------------------------------------------------------------
@@ -154,7 +185,7 @@ def _get_task(conn, task_id: int, project: str) -> sqlite3.Row:
 def cmd_add(args) -> None:
     conn, now = connect(), time.time()
     project = _project_from_args(args)
-    with writing(conn):
+    with writing(conn, project):
         cur = conn.execute(
             "INSERT INTO tasks (project, title, description, status, agent, pane_id,"
             " created_at, updated_at, completed_at) VALUES (?,?,?,?,?,?,?,?,?)",
@@ -170,33 +201,34 @@ def set_status(args, status: str) -> None:
     project = _project_from_args(args)
     for task_id in args.ids:
         _get_task(conn, task_id, project)
-        fields = {"status": status, "updated_at": now,
+        # Any status change brings an archived task back.
+        fields = {"status": status, "updated_at": now, "archived_at": None,
                   "completed_at": now if status == "done" else None}
         if getattr(args, "message", None):
             fields["note"] = args.message
         sets = ", ".join(f"{k} = ?" for k in fields)
-        with writing(conn):
+        with writing(conn, project):
             conn.execute(f"UPDATE tasks SET {sets} WHERE id = ?", (*fields.values(), task_id))
         print(f"#{task_id} -> {status}")
 
 
 def cmd_note(args) -> None:
-    conn = connect()
-    _get_task(conn, args.id, _project_from_args(args))
-    with writing(conn):
+    conn, project = connect(), _project_from_args(args)
+    _get_task(conn, args.id, project)
+    with writing(conn, project):
         conn.execute("UPDATE tasks SET note = ?, updated_at = ? WHERE id = ?",
                      (args.text, time.time(), args.id))
     print(f"#{args.id} note set")
 
 
 def cmd_edit(args) -> None:
-    conn = connect()
-    _get_task(conn, args.id, _project_from_args(args))
+    conn, project = connect(), _project_from_args(args)
+    _get_task(conn, args.id, project)
     fields = {k: v for k, v in (("title", args.title), ("description", args.description)) if v is not None}
     if not fields:
         sys.exit("htask: edit needs --title and/or -d")
     fields["updated_at"] = time.time()
-    with writing(conn):
+    with writing(conn, project):
         conn.execute(f"UPDATE tasks SET {', '.join(f'{k} = ?' for k in fields)} WHERE id = ?",
                      (*fields.values(), args.id))
     print(f"#{args.id} updated")
@@ -205,8 +237,8 @@ def cmd_edit(args) -> None:
 def cmd_list(args) -> None:
     conn = connect()
     project = _project_from_args(args)
-    rows = [r for r in fetch_tasks(conn, project)
-            if args.all or r["status"] not in ("done", "dropped")]
+    rows = [r for r in fetch_tasks(conn, project, archived=args.archived)
+            if args.all or args.archived or r["status"] not in ("done", "dropped")]
     if args.json:
         print(json.dumps({"project": project, "tasks": [dict(r) for r in rows]}, indent=2))
         return
@@ -230,12 +262,31 @@ def cmd_summary(args) -> None:
     conn = connect()
     project = _project_from_args(args)
     counts = dict.fromkeys(STATUSES, 0)
-    for row in conn.execute("SELECT status, count(*) AS n FROM tasks WHERE project = ? GROUP BY status", (project,)):
+    for row in conn.execute("SELECT status, count(*) AS n FROM tasks WHERE project = ? AND archived_at IS NULL GROUP BY status", (project,)):
         counts[row["status"]] = row["n"]
     blocked = conn.execute(
         "SELECT id, project, title, note, agent, pane_id, updated_at FROM tasks"
         " WHERE status = 'blocked' ORDER BY updated_at").fetchall()
     print(json.dumps({"project": project, "counts": counts, "blocked": [dict(r) for r in blocked]}))
+
+
+def cmd_clean(args) -> None:
+    """Archive done and dropped tasks finished more than --days ago. `htask list --archived` shows them."""
+    conn, now = connect(), time.time()
+    project = None if args.everywhere else _project_from_args(args)
+    where = ("status IN ('done', 'dropped') AND archived_at IS NULL"
+             " AND coalesce(completed_at, updated_at) <= ?" + ("" if project is None else " AND project = ?"))
+    params = (now - args.days * 86400,) + (() if project is None else (project,))
+    rows = conn.execute(f"SELECT id, project, title FROM tasks WHERE {where} ORDER BY id", params).fetchall()
+    scope = "every project" if project is None else project
+    if args.dry_run or not rows:
+        for r in rows:
+            print(f"#{r['id']:<4} {r['title']}")
+        print(f"{len(rows)} task(s) {'would be ' if args.dry_run and rows else ''}archived in {scope}")
+        return
+    with writing(conn, project):
+        conn.execute(f"UPDATE tasks SET archived_at = ? WHERE {where}", (now, *params))
+    print(f"archived {len(rows)} task(s) in {scope}")
 
 
 # --- agent hooks ---------------------------------------------------------------
@@ -298,7 +349,7 @@ def cmd_hook(args) -> None:
     try:
         event = json.load(sys.stdin)
         conn = connect()
-        with writing(conn):
+        with writing(conn, project_root(event.get("cwd") or os.getcwd())):
             sync_claude(event, conn)
     except Exception as e:  # noqa: BLE001 - a broken hook must not block the agent
         print(f"htask hook: {e}", file=sys.stderr)
@@ -526,7 +577,14 @@ def main(argv=None) -> None:
     ls = sub.add_parser("list", help="list this project's open tasks")
     ls.add_argument("--all", action="store_true", help="include done/dropped")
     ls.add_argument("--json", action="store_true")
+    ls.add_argument("--archived", action="store_true", help="only tasks put away by `htask clean`")
     ls.set_defaults(fn=cmd_list)
+
+    cl = sub.add_parser("clean", help="archive done/dropped tasks older than --days")
+    cl.add_argument("--days", type=float, default=7, help="age in days (default 7; 0 = all done)")
+    cl.add_argument("--everywhere", action="store_true", help="every project, not just this one")
+    cl.add_argument("--dry-run", action="store_true", help="list what would be archived")
+    cl.set_defaults(fn=cmd_clean)
 
     sm = sub.add_parser("summary", help="JSON counts for this project and blocked tasks everywhere")
     sm.set_defaults(fn=cmd_summary)

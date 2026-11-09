@@ -84,6 +84,20 @@ description = "open task panel"
 
 Panel keys: `j`/`k` scroll, `d` show or hide done tasks, `v` show or hide descriptions, `q` close.
 
+#### Progress in the sidebar
+
+When an agent in a Herdr TUI pane changes a task, htask sets a `$tasks` token (`done/total` for
+that repo) on the agent's pane and workspace. Add the token to the sidebar rows in
+`~/.config/herdr/config.toml`, then run `herdr server reload-config`:
+
+```toml
+[ui.sidebar.agents]
+rows = [["state_icon", "machine", "workspace", "tab"], ["agent", "$tasks"]]
+
+[ui.sidebar.spaces]
+rows = [["state_icon", "workspace", "$tasks"], ["branch", "git_status"]]
+```
+
 ## Claude Code: automatic, through a hook
 
 Claude Code already plans with its own task tool. This hook copies `TaskCreate`/`TaskUpdate`
@@ -120,6 +134,33 @@ shows in the Herdr task panel. Tasks are scoped to the current git repo.
 - `htask block <id> -m "<what you need>"` when you are waiting on the user or something external.
 - Keep using your own todo tool as well; htask is the record the human reads.
 ```
+
+## Cleaning up
+
+Done and dropped tasks stay until you archive them. Archived tasks leave the panel and the counts
+but are kept:
+
+```sh
+htask clean                   # this repo: done/dropped more than 7 days ago
+htask clean --days 0          # this repo: every done/dropped task (the panel's Archive button)
+htask clean --everywhere      # every repo
+htask clean --dry-run         # list what would be archived
+htask list --archived         # see them; `htask reopen <id>` brings one back
+```
+
+## Remote machines (SSH spaces in the Herdr app)
+
+When the focused space is on an SSH machine, the panel and chip run htask **on that machine**
+(`exec` with `on`), against that machine's own DB. Install it there once:
+
+```sh
+scp htask <machine>:~/.local/bin/htask
+```
+
+Remote spaces are polled every 5 s instead of watched. Blocked tasks on a remote machine are
+announced while one of its spaces is focused. This computer's blocked tasks are always announced.
+The Claude hook and the agent instructions also need setting up on that machine if agents run
+there.
 
 ## Data
 

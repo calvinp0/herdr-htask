@@ -3,8 +3,8 @@
 // Both read htask (one SQLite DB for every agent) and redraw when it writes or focus changes repo.
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, Scrollbar, InputState, Input } from "gpui-base";
-import { exec, theme, props, run, agents, terminals } from "herdr";
-import { HTASK, location, watchSignal } from "./common.js";
+import { theme, props, run, agents, terminals } from "herdr";
+import { htask, htaskError, qualify, location, watchSignal } from "./common.js";
 import { Chip } from "./chip.js";
 
 // Theme colour for each task status: the same colours the agents list uses.
@@ -29,9 +29,9 @@ export function sections(tasks, terminal, showDone) {
 // terminal is a plain shell again) or "gone" (the terminal closed). null when the task wasn't
 // made in a Herdr app terminal (by hand, or in the TUI).
 const SHELLS = new Set(["bash", "zsh", "fish", "sh", "dash", "ksh", "nu", "pwsh", "powershell"]);
-function owner(task) {
-  const addr = task.pane_id;
-  if (!/^([\w.-]+\/)?t\d+$/.test(addr ?? "")) return null;
+function owner(task, machine) {
+  if (!/^t\d+$/.test(task.pane_id ?? "")) return null;
+  const addr = qualify(machine, task.pane_id);
   const term = terminals().find((x) => x.address === addr);
   if (!term || term.state !== "live") return { addr, state: "gone" };
   const agent = agents().find((a) => a.address === addr);
@@ -66,25 +66,27 @@ class Panel {
     this.input.on("submit", (_e, cx) => this.add(cx));
     this.input.on("focus", (_e, cx) => { this.typing = true; cx.notify(); });
     this.input.on("blur", (_e, cx) => { this.typing = false; cx.notify(); });
-    watchSignal(cx, (cx) => this.refresh(cx));
-    // Backstop for writes that bypass htask (sqlite3 by hand) or a watch that failed.
-    cx.timer.every(15000, (cx) => this.refresh(cx));
+    watchSignal(cx, (cx) => { if (!this.machine) this.refresh(cx); });
+    // A remote space can't be watched: poll it every 5 s. Here, every 15 s is only a backstop
+    // for writes that bypass htask (sqlite3 by hand) or a watch that failed.
+    this.ticks = 0;
+    cx.timer.every(5000, (cx) => { if (this.machine || ++this.ticks % 3 === 0) this.refresh(cx); });
   }
 
   refresh(cx) {
-    const cwd = this.cwd;
-    if (!cwd || this.remote) return;
+    const cwd = this.cwd, machine = this.machine;
+    if (!cwd) return;
     if (this.loading) { this.again = true; return; }
     this.loading = true;
     cx.spawn(async (cx) => {
       try {
-        const r = await exec(HTASK(), ["--project", cwd, "list", "--all", "--json"], { timeout: 10000 });
-        if (cwd !== this.cwd) return;
-        if (r.code !== 0) throw new Error((r.stderr || r.stdout).trim());
+        const r = await htask(machine, ["--project", cwd, "list", "--all", "--json"]);
+        if (cwd !== this.cwd || machine !== this.machine) return;
+        if (r.code !== 0) throw new Error(htaskError(machine, r));
         const data = JSON.parse(r.stdout);
         this.project = data.project; this.tasks = data.tasks; this.error = null;
       } catch (e) {
-        if (cwd === this.cwd) this.error = String(e?.message ?? e);
+        if (cwd === this.cwd && machine === this.machine) { this.error = String(e?.message ?? e); this.tasks = []; this.project = null; }
       } finally {
         this.loading = false;
         if (this.again) { this.again = false; this.refresh(cx); }
@@ -95,13 +97,14 @@ class Panel {
 
   // Run an htask command on this project. The signal watch reloads the list afterwards.
   htask(args, cx) {
-    const project = this.project;
+    const project = this.project, machine = this.machine;
     if (!project) return;
     this.note = null;
     cx.spawn(async (cx) => {
       try {
-        const r = await exec(HTASK(), ["--project", project, ...args], { timeout: 10000 });
-        if (r.code !== 0) throw new Error((r.stderr || r.stdout).trim());
+        const r = await htask(machine, ["--project", project, ...args]);
+        if (r.code !== 0) throw new Error(htaskError(machine, r));
+        if (machine) this.refresh(cx);  // no watch on a remote space
       } catch (e) {
         this.note = String(e?.message ?? e);
       }
@@ -156,9 +159,9 @@ class Panel {
 
   row(task, t) {
     const open = this.open.has(task.id), done = task.status === "done";
-    const mine = this.terminal && task.pane_id === this.terminal;
+    const mine = this.terminal && qualify(this.machine, task.pane_id) === this.terminal;
     const active = task.status === "doing" || task.status === "blocked";
-    const own = active ? owner(task) : null;
+    const own = active ? owner(task, this.machine) : null;
     const orphaned = own && (own.state === "exited" || own.state === "gone");
     const detail = (text, color) => div().pl(22).text_size(11.5).text_color(color).child(text);
     return v_flex().id(`task-${task.id}`).flex_none().px(8).py(5).gap(2).rounded(7).cursor_pointer()
@@ -180,8 +183,9 @@ class Panel {
 
   render(cx) {
     const loc = location();
-    if (loc.remote !== this.remote) { this.remote = loc.remote; }
-    if (loc.cwd && loc.cwd !== this.cwd) { this.cwd = loc.cwd; this.open.clear(); this.refresh(cx); }
+    if (loc.cwd && (loc.cwd !== this.cwd || loc.machine !== this.machine)) {
+      this.cwd = loc.cwd; this.machine = loc.machine; this.open.clear(); this.refresh(cx);
+    }
     if (loc.cwd) this.terminal = loc.terminal;
 
     const t = theme();
@@ -191,8 +195,7 @@ class Panel {
     const name = this.project ? this.project.split("/").pop() : "";
     const shown = sections(this.tasks, this.terminal, this.showDone).filter(([, rows]) => rows.length);
 
-    const empty = this.remote ? "Tasks live on this computer, so remote spaces have none yet."
-      : this.error ? this.error
+    const empty = this.error ? this.error
       : !this.cwd ? "Focus a terminal to see its repo's tasks."
       : this.loading && !this.project ? "Loading tasks…"
       : `No tasks in ${name} yet. Add one below, or agents add them with:`;
@@ -205,6 +208,9 @@ class Panel {
         .when(Boolean(name), (e) => e.child(div().min_w(0).px(5).py(1).rounded(4).border_1().border_color(t.border).text_size(10).text_color(t.muted).truncate().child(name)))
         .child(div().flex_1())
         .child(div().text_size(11).text_color(t.muted).child(`${done}/${counted.length}`))
+        .when(done > 0, (e) => e.child(div().id("htask-archive").px(6).py(2).rounded(5).text_size(11).cursor_pointer()
+          .text_color(t.muted).hover((s) => s.bg(t.hover)).tooltip("Archive this repo's done tasks (htask clean --days 0)")
+          .on_click((_e, cx) => this.htask(["clean", "--days", "0"], cx)).child("Archive")))
         .child(div().id("htask-done").px(6).py(2).rounded(5).text_size(11).cursor_pointer()
           .text_color(this.showDone ? t.foreground : t.dim).bg(this.showDone ? t.raised : t.background).hover((s) => s.bg(t.hover))
           .on_click((_e, cx) => { this.showDone = !this.showDone; cx.notify(); })
@@ -218,11 +224,11 @@ class Panel {
             .children(rows.map((task) => this.row(task, t)))))
           .when(!shown.length, (e) => e.child(v_flex().p(8).gap(6).text_color(t.dim)
             .child(empty)
-            .when(!this.remote && !this.error && Boolean(this.project), (e) => e.child(
+            .when(!this.error && Boolean(this.project), (e) => e.child(
               div().px(8).py(5).rounded(6).bg(t.raised).text_size(11.5).text_color(t.muted).child('htask add "title" -d "what done looks like"'))))))
         .child(Scrollbar.vertical("htask-list").absolute().inset_0()))
       .when(Boolean(this.note), (e) => e.child(div().px(14).pb(6).text_size(11).text_color(t.blocked).child(this.note)))
-      .when(Boolean(this.project) && !this.remote, (e) => e.child(h_flex().flex_none().p(10).gap(8).border_t(1).border_color(t.border)
+      .when(Boolean(this.project), (e) => e.child(h_flex().flex_none().p(10).gap(8).border_t(1).border_color(t.border)
         .child(div().id("htask-add").flex_1().min_w(0).h(32).px(10).flex().items_center().rounded(8).border_1()
           .border_color(this.typing ? t.accent : t.border).cursor_text().on_mouse_down("left", (_e, cx) => cx.stop_propagation())
           .child(Input.new(this.input).h_full().text_size(12).text_color(t.foreground)))

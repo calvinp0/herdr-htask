@@ -18,7 +18,9 @@ class Base(unittest.TestCase):
             (repo / "sub").mkdir(parents=True)
             subprocess.run(["git", "init", "-q", str(repo)], check=True)
         self.env = {**os.environ, "HTASK_DB": str(root / "t.db"), "HERDR_PANE_ID": "w1:p1"}
-        self.env.pop("HTASK_PROJECT", None)
+        # Never report to a real Herdr TUI the tests happen to run in.
+        for key in ("HTASK_PROJECT", "HERDR_ENV", "HERDR_WORKSPACE_ID", "HERDR_BIN_PATH"):
+            self.env.pop(key, None)
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -126,6 +128,69 @@ class ClaudeHook(Base):
         s = json.loads(self.run_htask("summary").stdout)
         self.assertEqual((s["counts"]["done"], s["counts"]["todo"], s["counts"]["blocked"]), (1, 1, 0))
         self.assertEqual([(b["title"], b["note"]) for b in s["blocked"]], [("elsewhere", "need data")])
+
+class Clean(Base):
+    def age(self, task_id, days):
+        """Pretend task_id finished `days` ago."""
+        import sqlite3, time
+        conn = sqlite3.connect(self.env["HTASK_DB"])
+        with conn:
+            conn.execute("UPDATE tasks SET completed_at = ?, updated_at = ? WHERE id = ?",
+                         (time.time() - days * 86400,) * 2 + (task_id,))
+
+    def test_clean_archives_only_old_finished_tasks(self):
+        for title in ("old done", "new done", "open", "old dropped"):
+            self.run_htask("add", title)
+        self.run_htask("done", "1", "2")
+        self.run_htask("drop", "4")
+        self.age(1, 10)
+        self.age(4, 10)
+        self.assertIn("2 task(s) would be archived", self.run_htask("clean", "--dry-run").stdout)
+        self.assertEqual(len(self.tasks()), 4)  # dry run changed nothing
+        self.run_htask("clean")
+        self.assertEqual([t["title"] for t in self.tasks()], ["new done", "open"])
+        archived = json.loads(self.run_htask("list", "--archived", "--json").stdout)["tasks"]
+        self.assertEqual([t["title"] for t in archived], ["old done", "old dropped"])
+        summary = json.loads(self.run_htask("summary").stdout)
+        self.assertEqual((summary["counts"]["done"], summary["counts"]["dropped"]), (1, 0))
+
+    def test_clean_is_per_project_unless_everywhere(self):
+        self.run_htask("add", "a")
+        self.run_htask("add", "b", cwd=self.repo_b)
+        self.run_htask("done", "1")
+        self.run_htask("done", "2", cwd=self.repo_b)
+        self.run_htask("clean", "--days", "0")
+        self.assertEqual(self.tasks(), [])
+        self.assertEqual(len(self.tasks(self.repo_b)), 1)
+        self.run_htask("clean", "--days", "0", "--everywhere")
+        self.assertEqual(self.tasks(self.repo_b), [])
+
+    def test_reopen_unarchives(self):
+        self.run_htask("add", "x")
+        self.run_htask("done", "1")
+        self.run_htask("clean", "--days", "0")
+        self.run_htask("reopen", "1")
+        self.assertEqual([(t["title"], t["status"]) for t in self.tasks()], [("x", "todo")])
+
+
+class TuiProgress(Base):
+    def test_reports_tasks_token_to_pane_and_workspace(self):
+        log = Path(self.tmp.name) / "herdr.log"
+        fake = Path(self.tmp.name) / "herdr"
+        fake.write_text(f'#!/bin/sh\necho "$@" >> {log}\n')
+        fake.chmod(0o755)
+        self.env.update(HERDR_ENV="1", HERDR_BIN_PATH=str(fake), HERDR_WORKSPACE_ID="w1")
+        self.run_htask("add", "a")
+        self.run_htask("add", "b")
+        self.run_htask("done", "1")
+        last = log.read_text().splitlines()[-2:]
+        self.assertEqual(last, ["pane report-metadata w1:p1 --source htask --token tasks=1/2",
+                                "workspace report-metadata w1 --source htask --token tasks=1/2"])
+
+    def test_silent_outside_herdr(self):
+        self.env.pop("HERDR_ENV", None)
+        self.env["HERDR_BIN_PATH"] = "/nonexistent/herdr"
+        self.run_htask("add", "a")  # must not try (or fail) to report
 
 
 if __name__ == "__main__":
